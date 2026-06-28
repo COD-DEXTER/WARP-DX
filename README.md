@@ -48,6 +48,7 @@ Use responsibly and in compliance with applicable laws and policies.
 ## 🙏 Support
 
 If you like this project, give it a ⭐ on GitHub — it helps a lot!
+
 This project is based on warp-cli by dev-ir and has been modified and improved.
 
 ---
