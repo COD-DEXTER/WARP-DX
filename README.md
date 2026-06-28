@@ -8,15 +8,46 @@ Run this command in your terminal as root:
 ```bash
 bash <(curl -Ls https://raw.githubusercontent.com/COD-DEXTER/WARP-DX/refs/heads/main/main.sh)
 
-🚀 Features
-Hybrid Platform Support: Automatically detects the OS and works seamlessly on Debian, Ubuntu, and Alpine Linux.
-Zero-config SOCKS5 on Containers: On Alpine/Railway, it automatically configures and runs wireproxy (SOCKS5 Proxy on 127.0.0.1:10808) in user-space, bypassing systemd or TUN/TAP device requirements.
-Native CLI Support on Linux: On Ubuntu/Debian, it installs and manages the official cloudflare-warp client natively.
-IP Rotation: Features "Quick Reconnect" and "New Identity" to rotate and refresh your outbound SOCKS5 IP easily.
-Global Command: Self-installs as a global terminal command: dexter-warp.
-Built-in Diagnostics: Easily test your outgoing SOCKS5 IP, check connectivity, and verify proxy status.
-🖥️ Supported Operating Systems
-Ubuntu / Debian (Native warp-cli flow)
-Alpine Linux / Docker / Railway (Lightweight wireproxy flow)
-📢 Developer Contact
-Telegram: @COD_DEXTER
+## 🚀 Features
+
+- ✅ One-click install WARP (auto-detects system)
+- 🔐 SOCKS5 Proxy mode (127.0.0.1:10808)
+- 📡 View IPv4 / IPv6 / Proxy external IP
+- 🧪 Test outbound IP via WARP proxy
+- 🔄 Quick IP rotation (Reconnect / New Identity)
+- 🧹 Clean uninstall support
+- 🖥️ Self-installs as global command: `dexter-warp`
+- 🐧 Supports Ubuntu / Debian / Alpine Linux
+
+---
+
+## 🖥️ Supported Operating Systems
+
+- Ubuntu 22+
+- Debian 11+
+- Alpine Linux (container mode supported)
+
+---
+
+## 🌍 Supported Languages
+
+- English
+
+---
+
+## ⚠️ Disclaimer
+
+This tool is intended for educational and server management purposes only.  
+Use responsibly and in compliance with applicable laws and policies.
+
+---
+
+## 🙏 Support
+
+If you like this project, give it a ⭐ on GitHub — it helps a lot!
+
+---
+
+## 📢 Developer
+
+- Telegram: https://t.me/COD_DEXTER
