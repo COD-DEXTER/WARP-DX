@@ -7,6 +7,9 @@ It installs itself on first run as `dexter-warp`.
 Run this command in your terminal as root:
 ```bash
 bash <(curl -Ls https://raw.githubusercontent.com/COD-DEXTER/WARP-DX/refs/heads/main/main.sh)
+```
+
+---
 
 ## 🚀 Features
 
