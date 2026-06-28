@@ -287,35 +287,55 @@ dexter_warp_draw_menu() {
     local socks5_ip="N/A"
     [[ "$is_connected" == "yes" ]] && socks5_ip=$(dexter_warp_get_out_ip || echo "N/A")
 
-    cat << "EOF"
- ██╗    ██╗  █████╗  ██████╗  ██████╗      ██████╗  ██╗  ██╗
- ██║    ██║ ██╔══██╗ ██╔══██╗ ██╔══██╗     ██╔══██╗ ╚██╗██╔╝
- ██║ █╗ ██║ ███████║ ██████╔╝ ██████╔╝     ██║  ██║  ╚███╔╝ 
- ██║███╗██║ ██╔══██║ ██╔══██╗ ██╔═══╝      ██║  ██║  ██╔██╗ 
- ╚███╔███╔╝ ██║  ██║ ██║  ██║ ██║          ██████╔╝ ██╔╝ ██╗
-  ╚══╝╚══╝  ╚═╝  ╚═╝ ╚═╝  ╚═╝ ╚═╝          ╚═════╝  ╚═╝  ╚═╝
-+-------------------------------------------------------------------+
-EOF
-    echo -e "| Creator/Telegram: ${YELLOW}@COD_DEXTER${NC}                      | Version: ${GREEN}${VERSION}${NC}   |"
-    echo "+-------------------------------------------------------------------+"
+    # تابع هوشمند تراز کردن خطوط کادر کناری (بدون به‌هم‌ریختگی کدهای رنگی)
+    print_line() {
+        local left_content="$1"
+        # پاک کردن کاراکترهای اسکی رنگ در زمان محاسبه عرض
+        local clean_content=$(echo -e "$left_content" | sed -E 's/\x1b\[[0-9;]*[a-zA-Z]//g')
+        local len=${#clean_content}
+        local pad=$((67 - len))
+        local spaces=""
+        if [ $pad -gt 0 ]; then
+            spaces=$(printf '%*s' "$pad" "")
+        fi
+        echo -e "${CYAN}|${NC}${left_content}${spaces}${CYAN}|${NC}"
+    }
+
+    # کادر بالا و لوگوی بزرگ WARP DX با رنگ آبی فیروزه‌ای و زرد روشن
+    echo -e "${CYAN}+-------------------------------------------------------------------+${NC}"
+    echo -e "${CYAN}|   ${YELLOW}██╗    ██╗ █████╗ ██████╗ ██████╗        ██████╗██╗     ██╗     ${CYAN}|${NC}"
+    echo -e "${CYAN}|   ${YELLOW}██║    ██║██╔══██╗██╔══██╗██╔══██╗      ██╔════╝██║     ██║     ${CYAN}|${NC}"
+    echo -e "${CYAN}|   ${YELLOW}██║ █╗ ██║███████║██████╔╝██████╔╝█████╗██║     ██║     ██║     ${CYAN}|${NC}"
+    echo -e "${CYAN}|   ${YELLOW}██║███╗██║██╔══██║██╔══██╗██╔═══╝ ╚════╝██║     ██║     ██║     ${CYAN}|${NC}"
+    echo -e "${CYAN}|   ${YELLOW}╚███╔███╔╝██║  ██║██║  ██║██║           ╚██████╗███████╗██║     ${CYAN}|${NC}"
+    echo -e "${CYAN}|    ${YELLOW}╚══╝╚══╝ ╚═╝  ╚═╝╚═╝  ╚═╝╚═╝            ╚═════╝╚══════╝╚═╝     ${CYAN}|${NC}"
+    echo -e "${CYAN}+-------------------------------------------------------------------+${NC}"
+
+    # خط مشخصات سازنده و ورژن
+    print_line " Creator/Telegram: ${YELLOW}@COD_DEXTER${NC}                      | Version: ${GREEN}${VERSION}${NC}"
+    echo -e "${CYAN}+-------------------------------------------------------------------+${NC}"
+
+    # بخش نمایش وضعیت اتصال (پویا و تراز شده)
     if [[ "$is_connected" == "yes" ]]; then
-        echo -e "| WARP Status: ${GREEN}CONNECTED${NC}"
-        echo -e "| Proxy SOCKS5: ${CYAN}${proxy_ip}:${proxy_port}${NC}"
-        echo -e "| Outgoing IP: ${YELLOW}${socks5_ip}${NC}"
+        print_line " WARP Status: ${GREEN}CONNECTED${NC}"
+        print_line " Proxy: ${CYAN}${proxy_ip}:${proxy_port}${NC}"
+        print_line " Out IP: ${YELLOW}${socks5_ip}${NC}"
     else
-        echo -e "| WARP Status: ${RED}NOT CONNECTED${NC}"
+        print_line " WARP Status: ${RED}NOT CONNECTED${NC}"
     fi
-    echo "+-------------------------------------------------------------------+"
-    echo -e "| ${YELLOW}Choose an option:${NC}"
-    echo "+-------------------------------------------------------------------+"
-    echo -e "| 1 - Install WARP"
-    echo -e "| 2 - Show Status"
-    echo -e "| 3 - Test Proxy"
-    echo -e "| 4 - Remove WARP"
-    echo -e "| 5 - Change IP (Quick reconnect)"
-    echo -e "| 6 - Change IP (New Identity - stronger)"
-    echo -e "| 0 - Exit"
-    echo "+-------------------------------------------------------------------+"
+    echo -e "${CYAN}+-------------------------------------------------------------------+${NC}"
+
+    # گزینه‌ها
+    print_line " ${YELLOW}Choose an option:${NC}"
+    echo -e "${CYAN}+-------------------------------------------------------------------+${NC}"
+    print_line "  ${CYAN}1${NC} - Install WARP"
+    print_line "  ${CYAN}2${NC} - Show Status"
+    print_line "  ${CYAN}3${NC} - Test Proxy"
+    print_line "  ${CYAN}4${NC} - Remove WARP"
+    print_line "  ${CYAN}5${NC} - Change IP (Quick reconnect)"
+    print_line "  ${CYAN}6${NC} - Change IP (New Identity - stronger)"
+    print_line "  ${CYAN}0${NC} - Exit"
+    echo -e "${CYAN}+-------------------------------------------------------------------+${NC}"
     echo -ne "${YELLOW}Select option: ${NC}"
 }
 
