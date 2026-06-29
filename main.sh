@@ -2215,13 +2215,13 @@ dexter_warp_self_update() {
 }
 
 dexter_warp_about() {
-    printf "%b\n" "${CYAN}+-------------------------------------------------------------+${NC}"
-    printf "%b\n" "|                       WARP DX v${VERSION}                            |"
-    printf "%b\n" "|  A professional hybrid WARP client installer and SOCKS5 proxy  |"
-    printf "%b\n" "|  manager supporting Ubuntu, Debian, Alpine Linux, and Docker.|"
-    printf "%b\n" "|                                                             |"
-    printf "%b\n" "|  Created by: ${YELLOW}@COD-DEXTER${NC}                                    |"
-    printf "%b\n" "+-------------------------------------------------------------+${NC}"
+    printf "%b\n" "${CYAN}+------------------------------------------------------------------------+${NC}"
+    printf "%b\n" "|                       WARP DX v${VERSION}                                     |"
+    printf "%b\n" "|  A professional hybrid WARP client installer and SOCKS5 proxy                 |"
+    printf "%b\n" "|  manager supporting Ubuntu, Debian, Alpine Linux, and Docker.                 |"
+    printf "%b\n" "|                                                                               |"
+    printf "%b\n" "|  Created by: ${YELLOW}@COD-DEXTER${NC}                                        |"
+    printf "%b\n" "+-------------------------------------------------------------------------------+${NC}"
 }
 
 # ==========================================
@@ -2283,9 +2283,9 @@ dexter_warp_draw_menu() {
     printf "%b\n" " ${YELLOW}╚███╔███╔╝ ██║  ██║ ██║  ██║ ██║          ██████╔╝ ██╔╝ ██╗${NC}"
     printf "%b\n" "  ${YELLOW}╚══╝╚══╝  ╚═╝  ╚═╝ ╚═╝  ╚═╝ ╚═╝          ╚═════╝  ╚═╝  ╚═╝${NC}"
     
-    printf "%b\n" "${CYAN}+-------------------------------------------------------------------+${NC}"
-    print_line " Telegram Channel: ${MAGENTA}@COD-DEXTER${NC}                      | Version: ${GREEN}${VERSION}${NC}"
-    printf "%b\n" "${CYAN}+-------------------------------------------------------------------+${NC}"
+    printf "%b\n" "${CYAN}+-------------------------------------------------------------------------------+${NC}"
+    print_line " Telegram Channel: ${MAGENTA}@COD-DEXTER${NC}                                             | Version: ${GREEN}${VERSION}${NC}"
+    printf "%b\n" "${CYAN}+-------------------------------------------------------------------------------+${NC}"
 
     if [ "$is_connected" = "yes" ]; then
         print_line " WARP Status: ${GREEN}CONNECTED${NC}"
@@ -2294,10 +2294,10 @@ dexter_warp_draw_menu() {
     else
         print_line " WARP Status: ${RED}NOT CONNECTED${NC}"
     fi
-    printf "%b\n" "${CYAN}+-------------------------------------------------------------------+${NC}"
+    printf "%b\n" "${CYAN}+-------------------------------------------------------------------------------+${NC}"
 
     print_line " ${YELLOW}Choose an option:${NC}"
-    printf "%b\n" "${CYAN}+-------------------------------------------------------------------+${NC}"
+    printf "%b\n" "${CYAN}+-------------------------------------------------------------------------------+${NC}"
     print_line "  ${BLUE}1${NC} - Install WARP"
     print_line "  ${BLUE}2${NC} - Show Status"
     print_line "  ${BLUE}3${NC} - Test Proxy"
@@ -2314,7 +2314,7 @@ dexter_warp_draw_menu() {
     print_line "  ${BLUE}14${NC} - Check For Update"
     print_line "  ${BLUE}15${NC} - About"
     print_line "  ${BLUE}0${NC} - Exit"
-    printf "%b\n" "${CYAN}+-------------------------------------------------------------------+${NC}"
+    printf "%b\n" "${CYAN}+-------------------------------------------------------------------------------+${NC}"
     printf "%b" "${YELLOW}Select option: ${NC}"
 }
 
