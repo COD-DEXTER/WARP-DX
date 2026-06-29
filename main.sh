@@ -394,10 +394,6 @@ save_config() {
 }
 
 load_config() {
-    if [ "$PATHS_INITIALIZED" = false ]; then
-        init_paths
-        _ensure_dirs
-    fi
     local conf_file
     conf_file=$(get_config_path)
     [ ! -f "$conf_file" ] && return
@@ -550,7 +546,7 @@ log_msg() {
 # Section 7: Network Diagnostics
 # ==========================================
 check_internet() {
-    curl -s --connect-timeout 5 --max-time 10 https://1.1.1.1 >/dev/null 2>&1
+    curl -s --connect-timeout 3 --max-time 5 --fail https://1.1.1.1 >/dev/null 2>&1
 }
 
 check_dns_resolution() {
@@ -982,8 +978,7 @@ cf_register() {
     tos_time=$(date -u +%FT%T.000Z)
     local payload
     payload=$(printf '{"key":"%s","install_id":"","fcm_token":"","tos":"%s","type":"ios","locale":"en_US"}' "$public_key" "$tos_time")
-    # Force IPv4 explicit selection (-4) to bypass Railway/Docker broken IPv6 routing deadlocks
-    http_get "${CF_API}/reg" -4 -X POST \
+    http_get "${CF_API}/reg" -X POST \
       -H "Content-Type: application/json" \
       -H "User-Agent: okhttp/3.12.1" \
       -d "$payload"
@@ -992,8 +987,7 @@ cf_register() {
 cf_update() {
     local id="$1"
     local token="$2"
-    # Force IPv4 explicitly
-    http_get "${CF_API}/reg/${id}" -4 -X PATCH \
+    http_get "${CF_API}/reg/${id}" -X PATCH \
       -H "Content-Type: application/json" \
       -H "Authorization: Bearer ${token}" \
       -H "User-Agent: okhttp/3.12.1" \
@@ -1003,8 +997,7 @@ cf_update() {
 cf_delete() {
     local id="$1"
     local token="$2"
-    # Force IPv4 explicitly
-    http_get "${CF_API}/reg/${id}" -4 -X DELETE \
+    http_get "${CF_API}/reg/${id}" -X DELETE \
       -H "Content-Type: application/json" \
       -H "Authorization: Bearer ${token}" \
       -H "User-Agent: okhttp/3.12.1"
@@ -2215,13 +2208,13 @@ dexter_warp_self_update() {
 }
 
 dexter_warp_about() {
-    printf "%b\n" "${CYAN}+------------------------------------------------------------------------+${NC}"
-    printf "%b\n" "|                       WARP DX v${VERSION}                                     |"
-    printf "%b\n" "|  A professional hybrid WARP client installer and SOCKS5 proxy                 |"
-    printf "%b\n" "|  manager supporting Ubuntu, Debian, Alpine Linux, and Docker.                 |"
-    printf "%b\n" "|                                                                               |"
-    printf "%b\n" "|  Created by: ${YELLOW}@COD-DEXTER${NC}                                        |"
-    printf "%b\n" "+-------------------------------------------------------------------------------+${NC}"
+    printf "%b\n" "${CYAN}+-------------------------------------------------------------+${NC}"
+    printf "%b\n" "|                       WARP DX v${VERSION}                            |"
+    printf "%b\n" "|  A professional hybrid WARP client installer and SOCKS5 proxy  |"
+    printf "%b\n" "|  manager supporting Ubuntu, Debian, Alpine Linux, and Docker.|"
+    printf "%b\n" "|                                                             |"
+    printf "%b\n" "|  Created by: ${YELLOW}@COD-DEXTER${NC}                                    |"
+    printf "%b\n" "+-------------------------------------------------------------+${NC}"
 }
 
 # ==========================================
@@ -2229,93 +2222,91 @@ dexter_warp_about() {
 # ==========================================
 dexter_warp_draw_menu() {
     if is_minimal; then
-        printf "\n${CYAN}=== WARP DX v${VERSION} ===${NC}\n"
-        dexter_warp_is_connected && printf "${GREEN}Status: CONNECTED${NC}\n" || printf "${RED}Status: DISCONNECTED${NC}\n"
+        printf "%b\n" "${CYAN}=== WARP DX v${VERSION} ===${NC}"
+        if dexter_warp_is_connected; then
+            printf "%b\n" "Status: ${GREEN}CONNECTED${NC} (${PROXY_IP}:${SOCKS5_PORT})"
+        else
+            printf "%b\n" "Status: ${RED}DISCONNECTED${NC}"
+        fi
         printf "%b\n" "  1-Install  2-Status  3-Test  4-Remove  5-QuickIP"
-        printf "%b\n" "  6-NewID  7-Port  8-Restart  9-Logs  10-Bkp/Rst"
-        printf "%b\n" "  11-Reset  12-RunMode  13-IPMode  14-Update  15-About  0-Exit"
-        echo -ne "${YELLOW}Select: ${NC}"
-        return
+        printf "%b\n" "  6-NewID  7-Port  8-Restart  9-Logs 10-Bkp/Rst"
+        printf "%b\n" " 11-Reset 12-RunMode 13-IPMode 14-Update 15-About  0-Exit"
+        printf "%b" "${YELLOW}> ${NC}"
+        return 0
     fi
 
     clear
     local is_connected="no"
     dexter_warp_is_connected && is_connected="yes"
     local socks5_ip="N/A"
-
     if [ "$is_connected" = "yes" ]; then
         socks5_ip=$(dexter_warp_get_out_ip_cached 2>/dev/null || echo "N/A")
     fi
 
     print_line() {
         is_minimal && return 0
-        local left_content="$1"
-        local clean_content
+        local raw="$1"
+        local clean
         if [ -n "$BASH_VERSION" ]; then
-            local esc
-            esc=$(printf '\033')
-            clean_content="$left_content"
-            # Cyberpunk strip ANSI patterns
-            while [[ "$clean_content" =~ ${esc}\[[^a-zA-Z]*[a-zA-Z] ]]; do
-                clean_content="${clean_content//"${BASH_REMATCH[0]}"/}"
+            local esc; esc=$(printf '\033')
+            clean="$raw"
+            while [[ "$clean" =~ ${esc}\[[^a-zA-Z]*[a-zA-Z] ]]; do
+                clean="${clean//"${BASH_REMATCH[0]}"/}"
             done
         else
-            clean_content=$(printf '%s' "$left_content" | sed 's/\x1b\[[0-9;]*[a-zA-Z]//g' 2>/dev/null)
+            clean=$(printf '%s' "$raw" | sed 's/\x1b\[[0-9;]*[a-zA-Z]//g' 2>/dev/null)
         fi
-        local len=${#clean_content}
-        local pad=$((67 - len))
-        if [ "$pad" -lt 0 ]; then
-            left_content="${left_content:0:62}..."
-            pad=0
-        fi
-        local spaces=""
-        if [ "$pad" -gt 0 ]; then
-            spaces=$(printf '%*s' "$pad" "")
-        fi
-        printf "%b\n" "${CYAN}|${NC}${left_content}${spaces}${CYAN}|${NC}"
+        local vislen=${#clean}
+        local bw=73
+        local inner=$((bw - vislen))
+        [ "$inner" -lt 0 ] && inner=0
+        printf "%b\n" "${CYAN}|${NC} ${raw}$(printf '%*s' "$inner" '')${CYAN}|${NC}"
     }
 
-    # Banners and Title Block (60 chars wide to fit easily without breaking boundaries)
-    printf "%b\n" " ${MAGENTA}██╗    ██╗  █████╗  ██████╗  ██████╗      ██████╗  ██╗  ██╗${NC}"
-    printf "%b\n" " ${YELLOW}██║    ██║ ██╔══██╗ ██╔══██╗ ██╔══██╗     ██╔══██╗ ╚██╗██╔╝${NC}"
-    printf "%b\n" " ${YELLOW}██║ █╗ ██║ ███████║ ██████╔╝ ██████╔╝     ██║  ██║  ╚███╔╝  ${GREEN}WARP${NC}"
-    printf "%b\n" " ${YELLOW}██║███╗██║ ██╔══██║ ██╔══██╗ ██╔═══╝      ██║  ██║  ██╔██╗  ${GREEN} DX${NC}"
-    printf "%b\n" " ${YELLOW}╚███╔███╔╝ ██║  ██║ ██║  ██║ ██║          ██████╔╝ ██╔╝ ██╗${NC}"
-    printf "%b\n" "  ${YELLOW}╚══╝╚══╝  ╚═╝  ╚═╝ ╚═╝  ╚═╝ ╚═╝          ╚═════╝  ╚═╝  ╚═╝${NC}"
-    
-    printf "%b\n" "${CYAN}+-------------------------------------------------------------------------------+${NC}"
-    print_line " Telegram Channel: ${MAGENTA}@COD-DEXTER${NC}                                             | Version: ${GREEN}${VERSION}${NC}"
-    printf "%b\n" "${CYAN}+-------------------------------------------------------------------------------+${NC}"
+    local B="${CYAN}+---------------------------------------------------------------------------+${NC}"
+    local S="${CYAN}|${NC}"
+
+    printf "%b\n" "$B"
+    printf "%b\n" "${S} ${MAGENTA}██╗    ██╗ █████╗ ██████╗ ██████╗       ██████╗ ██╗  ██╗${NC}              ${S}"
+    printf "%b\n" "${S} ${YELLOW}██║    ██║██╔══██╗██╔══██╗██╔══██╗     ██╔══██╗╚██╗██╔╝${NC}              ${S}"
+    printf "%b\n" "${S} ${YELLOW}██║ █╗ ██║███████║██████╔╝██████╔╝     ██║  ██║ ╚███╔╝  ${GREEN}WARP${NC}        ${S}"
+    printf "%b\n" "${S} ${YELLOW}██║███╗██║██╔══██║██╔══██╗██╔═══╝      ██║  ██║ ██╔██╗  ${GREEN} DX${NC}         ${S}"
+    printf "%b\n" "${S} ${YELLOW}╚███╔███╔╝██║  ██║██║  ██║██║          ██████╔╝██╔╝ ██╗${NC}              ${S}"
+    printf "%b\n" "${S} ${YELLOW} ╚══╝╚══╝ ╚═╝  ╚═╝╚═╝  ╚═╝╚═╝          ╚═════╝ ╚═╝  ╚═╝${NC}              ${S}"
+    printf "%b\n" "$B"
+
+    printf "%b\n" "${S}  Creator: ${MAGENTA}@COD-DEXTER${NC}                          Version: ${GREEN}v${VERSION}${NC}  ${S}"
+    printf "%b\n" "$B"
 
     if [ "$is_connected" = "yes" ]; then
-        print_line " WARP Status: ${GREEN}CONNECTED${NC}"
-        print_line " Proxy: ${CYAN}${PROXY_IP}:${SOCKS5_PORT}${NC}"
-        print_line " Out IP: ${YELLOW}${socks5_ip}${NC}"
+        print_line "WARP Status: ${GREEN}CONNECTED${NC}"
+        print_line "Proxy:       ${CYAN}${PROXY_IP}:${SOCKS5_PORT}${NC}"
+        print_line "Out IP:      ${YELLOW}${socks5_ip}${NC}"
     else
-        print_line " WARP Status: ${RED}NOT CONNECTED${NC}"
+        print_line "WARP Status: ${RED}NOT CONNECTED${NC}"
     fi
-    printf "%b\n" "${CYAN}+-------------------------------------------------------------------------------+${NC}"
+    printf "%b\n" "$B"
 
-    print_line " ${YELLOW}Choose an option:${NC}"
-    printf "%b\n" "${CYAN}+-------------------------------------------------------------------------------+${NC}"
-    print_line "  ${BLUE}1${NC} - Install WARP"
-    print_line "  ${BLUE}2${NC} - Show Status"
-    print_line "  ${BLUE}3${NC} - Test Proxy"
-    print_line "  ${BLUE}4${NC} - Remove WARP"
-    print_line "  ${BLUE}5${NC} - Change IP (Quick reconnect)"
-    print_line "  ${BLUE}6${NC} - Change IP (New Identity - stronger)"
-    print_line "  ${BLUE}7${NC} - Change SOCKS5 Port & Bind IP"
-    print_line "  ${BLUE}8${NC} - Restart WARP"
-    print_line "  ${BLUE}9${NC} - View Logs"
-    print_line "  ${BLUE}10${NC} - Backup/Restore Configurations"
-    print_line "  ${BLUE}11${NC} - Reset Configurations"
-    print_line "  ${BLUE}12${NC} - Switch Script Run Mode (Current: $(dexter_warp_get_run_mode_label))"
-    print_line "  ${BLUE}13${NC} - Switch IP Version Mode (Current: $(dexter_warp_get_mode_label))"
-    print_line "  ${BLUE}14${NC} - Check For Update"
-    print_line "  ${BLUE}15${NC} - About"
-    print_line "  ${BLUE}0${NC} - Exit"
-    printf "%b\n" "${CYAN}+-------------------------------------------------------------------------------+${NC}"
-    printf "%b" "${YELLOW}Select option: ${NC}"
+    print_line "${YELLOW}Choose an option:${NC}"
+    printf "%b\n" "$B"
+    print_line "  ${BLUE}1${NC}  Install WARP"
+    print_line "  ${BLUE}2${NC}  Show Status"
+    print_line "  ${BLUE}3${NC}  Test Proxy"
+    print_line "  ${BLUE}4${NC}  Remove WARP"
+    print_line "  ${BLUE}5${NC}  Change IP (Quick reconnect)"
+    print_line "  ${BLUE}6${NC}  Change IP (New Identity)"
+    print_line "  ${BLUE}7${NC}  Change SOCKS5 Port & Bind IP"
+    print_line "  ${BLUE}8${NC}  Restart WARP"
+    print_line "  ${BLUE}9${NC}  View Logs"
+    print_line "  ${BLUE}10${NC} Backup / Restore Config"
+    print_line "  ${BLUE}11${NC} Reset Configurations"
+    print_line "  ${BLUE}12${NC} Switch Run Mode  [$(dexter_warp_get_run_mode_label)]"
+    print_line "  ${BLUE}13${NC} Switch IP Mode   [$(dexter_warp_get_mode_label)]"
+    print_line "  ${BLUE}14${NC} Check For Update"
+    print_line "  ${BLUE}15${NC} About"
+    print_line "  ${BLUE}0${NC}  Exit"
+    printf "%b\n" "$B"
+    printf "%b" "${YELLOW}  > ${NC}"
 }
 
 dexter_warp_main_menu() {
