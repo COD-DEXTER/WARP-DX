@@ -300,20 +300,17 @@ parse_config_val() {
     conf_file=$(get_config_path)
     [ ! -f "$conf_file" ] && { echo "$default_val"; return; }
 
-    # Robust non-breaking Config value parser
-    local val
-    val=$(awk -v key="$key" '
-    $1==key || index($0, key"=") == 1 {
-        sub(/^[^=]+=/,"")
-        gsub(/^"/,"")
-        gsub(/"$/,"")
-        gsub(/^\x27/,"")
-        gsub(/\x27$/,"")
-        print
-        exit
-    }' "$conf_file" 2>/dev/null)
+    local line
+    line=$(grep -m1 -F "${key}=" "$conf_file" 2>/dev/null)
+    [ -z "$line" ] && { echo "$default_val"; return; }
 
-    [ -z "$val" ] && { echo "$default_val"; return; }
+    local val="${line#*=}"
+    val="${val#\"}"
+    val="${val%\"}"
+    val="${val#\'}"
+    val="${val%\'}"
+    val="${val%%$'\n'}"
+    val="${val%%$'\r'}"
 
     case "$key" in
         SOCKS5_PORT)
@@ -1087,43 +1084,7 @@ dexter_warp_download_wireproxy() {
     # POSIX compliant binary location parser (fixes the BusyBox ash double asterisk bug)
     local found_bin=""
     found_bin=$(find "$extract_dir" -type f -name "wireproxy" | head -n1 2>/dev/null)
-    if [ -z "$found_bin" ] || [ ! -f "$found_bin" ]; then
-        rm -rf "$extract_dir" 2>/dev/null
-        return 1
-    fi
-
-    if ! chmod +x "$found_bin" 2>/dev/null; then
-        rm -rf "$extract_dir" 2>/dev/null
-        return 1
-    fi
-
-    if ! "$found_bin" -h &>/dev/null; then
-        printf "%b\n" "${RED}[ERROR] Downloaded binary is not compatible with this system.${NC}"
-        rm -rf "$extract_dir" 2>/dev/null
-        return 1
-    fi
-
-    mkdir -p "$install_dir" 2>/dev/null || true
-    local backup_bin="${bin_path}.bak"
-    [ -f "$bin_path" ] && cp "$bin_path" "$backup_bin" 2>/dev/null || true
-
-    if cp "$found_bin" "${bin_path}.tmp" 2>/dev/null && \
-       chmod +x "${bin_path}.tmp" 2>/dev/null && \
-       mv -f "${bin_path}.tmp" "$bin_path" 2>/dev/null; then
-        rm -rf "$extract_dir" 2>/dev/null
-        rm -f "$backup_bin" 2>/dev/null
-        return 0
-    else
-        [ -f "$backup_bin" ] && mv -f "$backup_bin" "$bin_path" 2>/dev/null || true
-        rm -rf "$extract_dir" 2>/dev/null
-        return 1
-    fi
-}
-
-# ==========================================
-# Section 16: Service Management (Unified)
-# ==========================================
-_service_start() {
+    if [_service_start() {
     _service_stop 2>/dev/null
 
     if [ "$CURRENT_MODE" = "VPS" ]; then
