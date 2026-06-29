@@ -2275,7 +2275,7 @@ dexter_warp_draw_menu() {
     printf "%b\n" "${S} ${YELLOW} ╚══╝╚══╝ ╚═╝  ╚═╝╚═╝  ╚═╝╚═╝         ╚═════╝ ╚═╝  ╚═╝${NC}  ${S}"
     printf "%b\n" "$B"
 
-    printf "%b\n" "${S}  Creator: ${MAGENTA}@COD-DEXTER${NC}                   Version: ${GREEN}v${VERSION}${NC} ${S}"
+    printf "%b\n" "${S}  Creator: ${MAGENTA}@COD-DEXTER${NC}                    Version: ${GREEN}v${VERSION}${NC} ${S}"
     printf "%b\n" "$B"
 
     if [ "$is_connected" = "yes" ]; then
