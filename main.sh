@@ -49,7 +49,7 @@ NC='\033[0m'
 
 LAST_IP_CHECK=0
 CACHED_IP=""
-IP_CACHE_TTL=60
+IP_CACHE_TTL=300
 
 SELF_HEAL_BACKOFF=0
 SELF_HEAL_MAX_BACKOFF=120
@@ -269,10 +269,7 @@ validate_ipv6() {
     case "$1" in
         *[!0-9a-fA-F:]*) return 1 ;;
     esac
-    local colons="${1//[^:]}"
-    [ "${#colons}" -ge 2 ] && [ "${#colons}" -le 7 ] || return 1
-    [[ "$1" == *:::* ]] && return 1
-    return 0
+    [[ "$1" == *:* ]]
 }
 
 validate_ip() {
@@ -303,20 +300,17 @@ parse_config_val() {
     conf_file=$(get_config_path)
     [ ! -f "$conf_file" ] && { echo "$default_val"; return; }
 
-    # Robust non-breaking Config value parser
-    local val
-    val=$(awk -v key="$key" '
-    $1==key || index($0, key"=") == 1 {
-        sub(/^[^=]+=/,"")
-        gsub(/^"/,"")
-        gsub(/"$/,"")
-        gsub(/^\x27/,"")
-        gsub(/\x27$/,"")
-        print
-        exit
-    }' "$conf_file" 2>/dev/null)
+    local line
+    line=$(grep -m1 -F "${key}=" "$conf_file" 2>/dev/null)
+    [ -z "$line" ] && { echo "$default_val"; return; }
 
-    [ -z "$val" ] && { echo "$default_val"; return; }
+    local val="${line#*=}"
+    val="${val#\"}"
+    val="${val%\"}"
+    val="${val#\'}"
+    val="${val%\'}"
+    val="${val%%$'\n'}"
+    val="${val%%$'\r'}"
 
     case "$key" in
         SOCKS5_PORT)
