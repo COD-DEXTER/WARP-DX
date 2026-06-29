@@ -2208,13 +2208,13 @@ dexter_warp_self_update() {
 }
 
 dexter_warp_about() {
-    printf "%b\n" "${CYAN}+---------------------------------------------------------+${NC}"
-    printf "%b\n" "|                       WARP DX v${VERSION}                          |"
-    printf "%b\n" "|  A professional hybrid WARP client installer and SOCKS5 proxy |"
-    printf "%b\n" "|  manager supporting Ubuntu, Debian, Alpine Linux, and Docker.|"
-    printf "%b\n" "|                                                             |"
-    printf "%b\n" "|  Created by: ${YELLOW}@COD-DEXTER${NC}                                   |"
-    printf "%b\n" "+---------------------------------------------------------+${NC}"
+    printf "%b\n" "${CYAN}+------------------------------------------------------------------+${NC}"
+    printf "%b\n" "|                       WARP DX v${VERSION}                      |"
+    printf "%b\n" "|  A professional hybrid WARP client installer and SOCKS5 proxy  |"
+    printf "%b\n" "|  manager supporting Ubuntu, Debian, Alpine Linux, and Docker.  |"
+    printf "%b\n" "|                                                                |"
+    printf "%b\n" "|  Created by: ${YELLOW}@COD-DEXTER${NC}                         |"
+    printf "%b\n" "+------------------------------------------------------------------+${NC}"
 }
 
 # ==========================================
@@ -2267,15 +2267,15 @@ dexter_warp_draw_menu() {
     local S="${CYAN}|${NC}"
 
     printf "%b\n" "$B"
-    printf "%b\n" "${S} ${MAGENTA}██╗    ██╗ █████╗ ██████╗ ██████╗       ██████╗ ██╗  ██╗${NC}              ${S}"
-    printf "%b\n" "${S} ${YELLOW}██║    ██║██╔══██╗██╔══██╗██╔══██╗     ██╔══██╗╚██╗██╔╝${NC}              ${S}"
-    printf "%b\n" "${S} ${YELLOW}██║ █╗ ██║███████║██████╔╝██████╔╝     ██║  ██║ ╚███╔╝${NC}              ${S}"         
-    printf "%b\n" "${S} ${YELLOW}██║███╗██║██╔══██║██╔══██╗██╔═══╝      ██║  ██║ ██╔██╗${NC}              ${S}" 
-    printf "%b\n" "${S} ${YELLOW}╚███╔███╔╝██║  ██║██║  ██║██║          ██████╔╝██╔╝ ██╗${NC}              ${S}"
-    printf "%b\n" "${S} ${YELLOW} ╚══╝╚══╝ ╚═╝  ╚═╝╚═╝  ╚═╝╚═╝          ╚═════╝ ╚═╝  ╚═╝${NC}              ${S}"
+    printf "%b\n" "${S} ${MAGENTA}██╗    ██╗ █████╗ ██████╗ ██████╗       ██████╗ ██╗  ██╗${NC} ${S}"
+    printf "%b\n" "${S} ${YELLOW}██║    ██║██╔══██╗██╔══██╗██╔══██╗     ██╔══██╗╚██╗██╔╝${NC} ${S}"
+    printf "%b\n" "${S} ${YELLOW}██║ █╗ ██║███████║██████╔╝██████╔╝     ██║  ██║ ╚███╔╝${NC} ${S}"         
+    printf "%b\n" "${S} ${YELLOW}██║███╗██║██╔══██║██╔══██╗██╔═══╝      ██║  ██║ ██╔██╗${NC} ${S}" 
+    printf "%b\n" "${S} ${YELLOW}╚███╔███╔╝██║  ██║██║  ██║██║          ██████╔╝██╔╝ ██╗${NC} ${S}"
+    printf "%b\n" "${S} ${YELLOW} ╚══╝╚══╝ ╚═╝  ╚═╝╚═╝  ╚═╝╚═╝          ╚═════╝ ╚═╝  ╚═╝${NC} ${S}"
     printf "%b\n" "$B"
 
-    printf "%b\n" "${S}  Creator: ${MAGENTA}@COD-DEXTER${NC}                          Version: ${GREEN}v${VERSION}${NC}  ${S}"
+    printf "%b\n" "${S}  Creator: ${MAGENTA}@COD-DEXTER${NC}                    Version: ${GREEN}v${VERSION}${NC}  ${S}"
     printf "%b\n" "$B"
 
     if [ "$is_connected" = "yes" ]; then
