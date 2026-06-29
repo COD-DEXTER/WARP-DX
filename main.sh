@@ -300,17 +300,20 @@ parse_config_val() {
     conf_file=$(get_config_path)
     [ ! -f "$conf_file" ] && { echo "$default_val"; return; }
 
-    local line
-    line=$(grep -m1 -F "${key}=" "$conf_file" 2>/dev/null)
-    [ -z "$line" ] && { echo "$default_val"; return; }
+    # Robust non-breaking Config value parser
+    local val
+    val=$(awk -v key="$key" '
+    $1==key || index($0, key"=") == 1 {
+        sub(/^[^=]+=/,"")
+        gsub(/^"/,"")
+        gsub(/"$/,"")
+        gsub(/^\x27/,"")
+        gsub(/\x27$/,"")
+        print
+        exit
+    }' "$conf_file" 2>/dev/null)
 
-    local val="${line#*=}"
-    val="${val#\"}"
-    val="${val%\"}"
-    val="${val#\'}"
-    val="${val%\'}"
-    val="${val%%$'\n'}"
-    val="${val%%$'\r'}"
+    [ -z "$val" ] && { echo "$default_val"; return; }
 
     case "$key" in
         SOCKS5_PORT)
@@ -394,6 +397,10 @@ save_config() {
 }
 
 load_config() {
+    if [ "$PATHS_INITIALIZED" = false ]; then
+        init_paths
+        _ensure_dirs
+    fi
     local conf_file
     conf_file=$(get_config_path)
     [ ! -f "$conf_file" ] && return
@@ -546,7 +553,7 @@ log_msg() {
 # Section 7: Network Diagnostics
 # ==========================================
 check_internet() {
-    curl -s --connect-timeout 3 --max-time 5 --fail https://1.1.1.1 >/dev/null 2>&1
+    curl -s --connect-timeout 5 --max-time 10 https://1.1.1.1 >/dev/null 2>&1
 }
 
 check_dns_resolution() {
@@ -978,7 +985,8 @@ cf_register() {
     tos_time=$(date -u +%FT%T.000Z)
     local payload
     payload=$(printf '{"key":"%s","install_id":"","fcm_token":"","tos":"%s","type":"ios","locale":"en_US"}' "$public_key" "$tos_time")
-    http_get "${CF_API}/reg" -X POST \
+    # Force IPv4 explicit selection (-4) to bypass Railway/Docker broken IPv6 routing deadlocks
+    http_get "${CF_API}/reg" -4 -X POST \
       -H "Content-Type: application/json" \
       -H "User-Agent: okhttp/3.12.1" \
       -d "$payload"
@@ -987,7 +995,8 @@ cf_register() {
 cf_update() {
     local id="$1"
     local token="$2"
-    http_get "${CF_API}/reg/${id}" -X PATCH \
+    # Force IPv4 explicitly
+    http_get "${CF_API}/reg/${id}" -4 -X PATCH \
       -H "Content-Type: application/json" \
       -H "Authorization: Bearer ${token}" \
       -H "User-Agent: okhttp/3.12.1" \
@@ -997,7 +1006,8 @@ cf_update() {
 cf_delete() {
     local id="$1"
     local token="$2"
-    http_get "${CF_API}/reg/${id}" -X DELETE \
+    # Force IPv4 explicitly
+    http_get "${CF_API}/reg/${id}" -4 -X DELETE \
       -H "Content-Type: application/json" \
       -H "Authorization: Bearer ${token}" \
       -H "User-Agent: okhttp/3.12.1"
@@ -2222,17 +2232,13 @@ dexter_warp_about() {
 # ==========================================
 dexter_warp_draw_menu() {
     if is_minimal; then
-        printf "%b\n" "${CYAN}=== WARP DX v${VERSION} ===${NC}"
-        if dexter_warp_is_connected; then
-            printf "%b\n" "Status: ${GREEN}CONNECTED${NC} (${PROXY_IP}:${SOCKS5_PORT})"
-        else
-            printf "%b\n" "Status: ${RED}DISCONNECTED${NC}"
-        fi
+        printf "\n${CYAN}=== WARP DX v${VERSION} ===${NC}\n"
+        dexter_warp_is_connected && printf "${GREEN}Status: CONNECTED${NC}\n" || printf "${RED}Status: DISCONNECTED${NC}\n"
         printf "%b\n" "  1-Install  2-Status  3-Test  4-Remove  5-QuickIP"
-        printf "%b\n" "  6-NewID  7-Port  8-Restart  9-Logs 10-Bkp/Rst"
-        printf "%b\n" " 11-Reset 12-RunMode 13-IPMode 14-Update 15-About  0-Exit"
-        printf "%b" "${YELLOW}> ${NC}"
-        return 0
+        printf "%b\n" "  6-NewID  7-Port  8-Restart  9-Logs  10-Bkp/Rst"
+        printf "%b\n" "  11-Reset  12-RunMode  13-IPMode  14-Update  15-About  0-Exit"
+        echo -ne "${YELLOW}Select: ${NC}"
+        return
     fi
 
     clear
@@ -2271,19 +2277,18 @@ dexter_warp_draw_menu() {
         fi
         printf "%b\n" "${CYAN}|${NC}${left_content}${spaces}${CYAN}|${NC}"
     }
-        
-        # High-tech Cyberpunk Neon Magenta & Cyan UI
-        printf "%b\n" "${CYAN}+-------------------------------------------------------------------+${NC}" 
-        printf "%b\n" "${CYAN}| ${MAGENTA}██╗    ██╗ █████╗ ██████╗ ██████╗     ██████╗ ██╗  ██╗ ${CYAN}         |${NC}"
-        printf "%b\n" "${CYAN}| ${YELLOW}██║    ██║██╔══██╗██╔══██╗██╔══██╗    ██╔══██╗╚██╗██╔╝ ${CYAN}         |${NC}"
-        printf "%b\n" "${CYAN}| ${YELLOW}██║ █╗ ██║███████║██████╔╝██████╔╝    ██║  ██║ ╚███╔╝  ${GREEN}WARP${CYAN}  |${NC}"
-        printf "%b\n" "${CYAN}| ${YELLOW}██║███╗██║██╔══██║██╔══██╗██╔═══╝     ██║  ██║ ██╔██╗  ${GREEN} DX ${CYAN}  |${NC}"
-        printf "%b\n" "${CYAN}| ${YELLOW}╚███╔███╔╝██║  ██║██║  ██║██║         ██████╔╝██╔╝ ██╗ ${CYAN}         |${NC}"
-        printf "%b\n" "${CYAN}| ${YELLOW} ╚══╝╚══╝ ╚═╝  ╚═╝╚═╝  ╚═╝╚═╝         ╚═════╝ ╚═╝  ╚═╝ ${CYAN}         |${NC}"
-        printf "%b\n" "${CYAN}+-------------------------------------------------------------------+${NC}"
 
-        print_line " Creator/Telegram: ${MAGENTA}@COD-DEXTER${NC}                      | Version: ${GREEN}${VERSION}${NC}"
-        printf "%b\n" "${CYAN}+-------------------------------------------------------------------+${NC}"
+    # Banners and Title Block (60 chars wide to fit easily without breaking boundaries)
+    printf "%b\n" " ${MAGENTA}██╗    ██╗  █████╗  ██████╗  ██████╗      ██████╗  ██╗  ██╗${NC}"
+    printf "%b\n" " ${YELLOW}██║    ██║ ██╔══██╗ ██╔══██╗ ██╔══██╗     ██╔══██╗ ╚██╗██╔╝${NC}"
+    printf "%b\n" " ${YELLOW}██║ █╗ ██║ ███████║ ██████╔╝ ██████╔╝     ██║  ██║  ╚███╔╝  ${GREEN}WARP${NC}"
+    printf "%b\n" " ${YELLOW}██║███╗██║ ██╔══██║ ██╔══██╗ ██╔═══╝      ██║  ██║  ██╔██╗  ${GREEN} DX${NC}"
+    printf "%b\n" " ${YELLOW}╚███╔███╔╝ ██║  ██║ ██║  ██║ ██║          ██████╔╝ ██╔╝ ██╗${NC}"
+    printf "%b\n" "  ${YELLOW}╚══╝╚══╝  ╚═╝  ╚═╝ ╚═╝  ╚═╝ ╚═╝          ╚═════╝  ╚═╝  ╚═╝${NC}"
+    
+    printf "%b\n" "${CYAN}+-------------------------------------------------------------------+${NC}"
+    print_line " Telegram Channel: ${MAGENTA}@COD-DEXTER${NC}                      | Version: ${GREEN}${VERSION}${NC}"
+    printf "%b\n" "${CYAN}+-------------------------------------------------------------------+${NC}"
 
     if [ "$is_connected" = "yes" ]; then
         print_line " WARP Status: ${GREEN}CONNECTED${NC}"
