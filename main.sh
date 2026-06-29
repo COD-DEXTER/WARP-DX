@@ -2279,15 +2279,15 @@ dexter_warp_draw_menu() {
     printf "%b\n" "$B"
 
     if [ "$is_connected" = "yes" ]; then
-        print_line "WARP Status:  ${GREEN}CONNECTED${NC}"
-        print_line "Proxy:        ${CYAN}${PROXY_IP}:${SOCKS5_PORT}${NC}"
-        print_line "Out IP:       ${YELLOW}${socks5_ip}${NC}"
+        print_line "WARP Status:   ${GREEN}CONNECTED${NC}"
+        print_line "Proxy:         ${CYAN}${PROXY_IP}:${SOCKS5_PORT}${NC}"
+        print_line "Out IP:        ${YELLOW}${socks5_ip}${NC}"
     else
-        print_line "WARP Status:  ${RED}NOT CONNECTED${NC}"
+        print_line "WARP Status:   ${RED}NOT CONNECTED${NC}"
     fi
     printf "%b\n" "$B"
 
-    print_line "${YELLOW}Choose an option :${NC}"
+    print_line  "${YELLOW}Choose an option :${NC}"
     printf "%b\n" "$B"
     print_line "  ${BLUE}1${NC}   Install WARP"
     print_line "  ${BLUE}2${NC}   Show Status"
