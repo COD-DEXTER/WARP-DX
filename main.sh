@@ -49,7 +49,7 @@ NC='\033[0m'
 
 LAST_IP_CHECK=0
 CACHED_IP=""
-IP_CACHE_TTL=300
+IP_CACHE_TTL=60
 
 SELF_HEAL_BACKOFF=0
 SELF_HEAL_MAX_BACKOFF=120
@@ -269,7 +269,10 @@ validate_ipv6() {
     case "$1" in
         *[!0-9a-fA-F:]*) return 1 ;;
     esac
-    [[ "$1" == *:* ]]
+    local colons="${1//[^:]}"
+    [ "${#colons}" -ge 2 ] && [ "${#colons}" -le 7 ] || return 1
+    [[ "$1" == *:::* ]] && return 1
+    return 0
 }
 
 validate_ip() {
@@ -300,17 +303,20 @@ parse_config_val() {
     conf_file=$(get_config_path)
     [ ! -f "$conf_file" ] && { echo "$default_val"; return; }
 
-    local line
-    line=$(grep -m1 -F "${key}=" "$conf_file" 2>/dev/null)
-    [ -z "$line" ] && { echo "$default_val"; return; }
+    # Robust non-breaking Config value parser
+    local val
+    val=$(awk -v key="$key" '
+    $1==key || index($0, key"=") == 1 {
+        sub(/^[^=]+=/,"")
+        gsub(/^"/,"")
+        gsub(/"$/,"")
+        gsub(/^\x27/,"")
+        gsub(/\x27$/,"")
+        print
+        exit
+    }' "$conf_file" 2>/dev/null)
 
-    local val="${line#*=}"
-    val="${val#\"}"
-    val="${val%\"}"
-    val="${val#\'}"
-    val="${val%\'}"
-    val="${val%%$'\n'}"
-    val="${val%%$'\r'}"
+    [ -z "$val" ] && { echo "$default_val"; return; }
 
     case "$key" in
         SOCKS5_PORT)
@@ -1084,7 +1090,43 @@ dexter_warp_download_wireproxy() {
     # POSIX compliant binary location parser (fixes the BusyBox ash double asterisk bug)
     local found_bin=""
     found_bin=$(find "$extract_dir" -type f -name "wireproxy" | head -n1 2>/dev/null)
-    if [_service_start() {
+    if [ -z "$found_bin" ] || [ ! -f "$found_bin" ]; then
+        rm -rf "$extract_dir" 2>/dev/null
+        return 1
+    fi
+
+    if ! chmod +x "$found_bin" 2>/dev/null; then
+        rm -rf "$extract_dir" 2>/dev/null
+        return 1
+    fi
+
+    if ! "$found_bin" -h &>/dev/null; then
+        printf "%b\n" "${RED}[ERROR] Downloaded binary is not compatible with this system.${NC}"
+        rm -rf "$extract_dir" 2>/dev/null
+        return 1
+    fi
+
+    mkdir -p "$install_dir" 2>/dev/null || true
+    local backup_bin="${bin_path}.bak"
+    [ -f "$bin_path" ] && cp "$bin_path" "$backup_bin" 2>/dev/null || true
+
+    if cp "$found_bin" "${bin_path}.tmp" 2>/dev/null && \
+       chmod +x "${bin_path}.tmp" 2>/dev/null && \
+       mv -f "${bin_path}.tmp" "$bin_path" 2>/dev/null; then
+        rm -rf "$extract_dir" 2>/dev/null
+        rm -f "$backup_bin" 2>/dev/null
+        return 0
+    else
+        [ -f "$backup_bin" ] && mv -f "$backup_bin" "$bin_path" 2>/dev/null || true
+        rm -rf "$extract_dir" 2>/dev/null
+        return 1
+    fi
+}
+
+# ==========================================
+# Section 16: Service Management (Unified)
+# ==========================================
+_service_start() {
     _service_stop 2>/dev/null
 
     if [ "$CURRENT_MODE" = "VPS" ]; then
@@ -2332,24 +2374,3 @@ if ! acquire_lock; then
 fi
 
 dexter_warp_main_menu
-
---- END OF FILE text/plain ---
-من این فایلو فرستادم که اون مشکلات ریز رو هم حل کنی دمت گرم کدی که میدی کامل باشه بدون عیب ممنون
-منظورم از مشکلات ریز ایناست :
-1.هنوز در Minimal mode بعضی توابع سنگین (مثل print_line) تعریف می‌شوند (هرچند اجرا نمی‌شوند).
-2.get_random در بعضی جاها (مثل quick IP change) می‌توانست ساده‌تر باشد.
-3.نسخه هنوز 2.9 است (بهتره به 3.1 تغییر کنه)
-و بقیه عیب هایی که توی پچ گفتی
-کلا به عنوان کپی بدون عیب و نقص با رنگ بندی خوشگل بفرست گلی دمت گرم منتظرم
-یادت نره نسخه رو ۳.۱ کنی و ایدی تلگرامم جای کریتور بزاری
-Telegram Channel : @COD-DEXTER 
-منتظر سورس بدون نقص کپی هستم گلی دمت گرم
-ببین این کدی که فرستادم توی خط ۵۶۵ اینو داره : WG_PEER_ENDPOINT="$selected_endpoint"
-که تو نقد قبلی گفتی مشکل داره و برای وارپ معمولا ای پی عوض نمیکنه اینم برام بهینه کن جوری که با کدهای من سازگار باشه و درست کار کنه دمت گرم
-و اینم بگم اسکریپت با bash <(curl ...) اجرا میشه اینم که گفتی تو نقد قبلی مشکل داره رو برام حل کن گلییییی
-منتظر سورس بدون نقص به صورت کپی هستم دمت گرم
-توی خط ۹۷۶ هم اینو داره : systemctl stop wireproxy &>/dev/null || true
-که تو نقد قبلی گفتی systemctl quote رو بد میفهمه اینم اصلاح کن تو نسخه نهایی
-و کلا تک تک نقد هایی که خودت کردی رو روی کدی که فرستادم اعمال کن و بی نقص ترین سورس گیت هاب رو برام به صورت کپی بفرست دمت گرم .
-و اینم بگم تابع is_minimal رو جوری بهینه کن که همون اول اگه مینیمال بود از محاسبات سنگین کلا بیاد بیرون و محاسبات الکی انجام نده
-سورس رو که بهینه کردی و بی نقص شد برام بفرست .
