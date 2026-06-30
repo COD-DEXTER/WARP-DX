@@ -546,7 +546,17 @@ log_msg() {
 # Section 7: Network Diagnostics
 # ==========================================
 check_internet() {
-    curl -s --connect-timeout 3 --max-time 5 --fail https://1.1.1.1 >/dev/null 2>&1
+    local stderr_file exit_code
+    stderr_file=$(mktemp 2>/dev/null) || stderr_file="/tmp/.dexter_inet_err.$$"
+    curl -s --connect-timeout 3 --max-time 5 --fail https://1.1.1.1 >/dev/null 2>"$stderr_file"
+    exit_code=$?
+    if [ "$exit_code" -ne 0 ]; then
+        local curl_err
+        curl_err=$(tr -s '\n' ' ' < "$stderr_file" 2>/dev/null)
+        log_msg "ERROR" "check_internet failed | curl_exit=${exit_code} ($(curl_exit_meaning "$exit_code")) | curl_stderr=\"${curl_err}\""
+    fi
+    rm -f "$stderr_file" 2>/dev/null
+    return "$exit_code"
 }
 
 check_dns_resolution() {
@@ -628,7 +638,41 @@ classify_network_error() {
 http_get() {
     local url="$1"
     shift
-    curl -s --fail --retry 2 --connect-timeout 3 --max-time 5 "$@" "$url" 2>/dev/null
+    local stderr_file out exit_code http_code body marker
+    marker="HTTPCODE_MARKER_"
+    stderr_file=$(mktemp 2>/dev/null) || stderr_file="/tmp/.dexter_http_err.$$"
+
+    out=$(curl -s --fail --retry 2 --connect-timeout 3 --max-time 5 \
+        -w "${marker}%{http_code}" "$@" "$url" 2>"$stderr_file")
+    exit_code=$?
+
+    http_code="${out##*${marker}}"
+    body="${out%${marker}*}"
+
+    if [ "$exit_code" -ne 0 ]; then
+        local curl_err
+        curl_err=$(tr -s '\n' ' ' < "$stderr_file" 2>/dev/null)
+        log_msg "ERROR" "http_get failed | url=${url} | curl_exit=${exit_code} ($(curl_exit_meaning "$exit_code")) | http_code=${http_code:-N/A} | curl_stderr=\"${curl_err}\" | body=\"${body:-EMPTY}\""
+    fi
+
+    rm -f "$stderr_file" 2>/dev/null
+    printf '%s' "$body"
+    return "$exit_code"
+}
+
+# Human readable meaning for common curl exit codes, used for diagnostics in logs.
+curl_exit_meaning() {
+    case "$1" in
+        0) echo "success" ;;
+        6) echo "could not resolve host (DNS failure / domain blocked)" ;;
+        7) echo "could not connect to host (refused / filtered / port blocked)" ;;
+        22) echo "HTTP error response (4xx/5xx) returned by server" ;;
+        28) echo "operation timed out (connect-timeout/max-time exceeded, likely filtered)" ;;
+        35) echo "SSL/TLS handshake failed (possible SNI/TLS filtering)" ;;
+        52) echo "empty reply from server (connection reset mid-request)" ;;
+        56) echo "failure receiving network data (connection reset/blocked)" ;;
+        *) echo "see curl(1) exit codes" ;;
+    esac
 }
 
 http_download() {
@@ -1306,9 +1350,14 @@ dexter_warp_install() {
 # ==========================================
 dexter_warp_register_api() {
     local private_key=""
-    private_key=$(wg genkey 2>/dev/null || openssl rand -base64 32 2>/dev/null || dd if=/dev/urandom bs=32 count=1 2>/dev/null | base64 2>/dev/null | tr -d '\r\n')
+    private_key=$(wg genkey 2>/dev/null) || private_key=""
+    if [ -z "$private_key" ]; then
+        log_msg "WARNING" "'wg genkey' unavailable or failed, falling back to openssl/dd (note: this key will NOT work with 'wg pubkey' unless wireguard-tools is installed)"
+        private_key=$(openssl rand -base64 32 2>/dev/null || dd if=/dev/urandom bs=32 count=1 2>/dev/null | base64 2>/dev/null | tr -d '\r\n')
+    fi
 
     if [ -z "$private_key" ]; then
+        log_msg "ERROR" "Key generation failed: neither 'wg genkey', 'openssl rand', nor 'dd' produced a key. Is wireguard-tools/openssl installed?"
         printf "%b\n" "${RED}[ERROR] WireGuard key generation failed.${NC}"
         return 1
     fi
@@ -1317,6 +1366,7 @@ dexter_warp_register_api() {
     public_key=$(printf '%s' "$private_key" | wg pubkey 2>/dev/null)
 
     if [ -z "$public_key" ]; then
+        log_msg "ERROR" "Public key derivation failed: '$(command -v wg 2>/dev/null || echo "wg command not found")' could not derive pubkey from the generated private key."
         printf "%b\n" "${RED}[ERROR] WireGuard public key derivation failed.${NC}"
         return 1
     fi
@@ -1327,12 +1377,13 @@ dexter_warp_register_api() {
 
     for attempt in 1 2 3; do
         if ! check_internet; then
-            log_msg "WARNING" "No internet during registration attempt $attempt"
+            log_msg "WARNING" "No internet during registration attempt $attempt (see check_internet failure above for curl details)"
             local backoff=$((attempt * 3))
             sleep "$backoff"
             continue
         fi
         response=$(cf_register "$public_key")
+        local cf_exit=$?
 
         if [ -n "$response" ] && [ "$response" != "null" ]; then
             local check_id
@@ -1344,15 +1395,20 @@ dexter_warp_register_api() {
             if [[ -n "$check_id" ]] && [ "$check_id" != "null" ]; then
                 success=true
                 break
+            else
+                log_msg "ERROR" "Registration attempt $attempt: Cloudflare responded but no 'id' field found | curl_exit=${cf_exit} | response=\"${response}\""
             fi
+        else
+            log_msg "ERROR" "Registration attempt $attempt: empty/null response from Cloudflare API | curl_exit=${cf_exit} (see http_get failure log above for exact reason)"
         fi
         sleep "$((attempt * 2))"
     done
 
     if [ "$success" = false ]; then
-        log_msg "ERROR" "Cloudflare registration failed after 3 attempts"
+        log_msg "ERROR" "Cloudflare registration failed after 3 attempts. Check the http_get/check_internet error lines above this for the exact curl exit code, HTTP code and stderr message."
         return 1
     fi
+
 
     WG_PRIV_KEY="$private_key"
 
@@ -1612,10 +1668,12 @@ dexter_warp_connect() {
     if [ "$connect_ok" = false ] && [ ! -f "$wconf" ]; then
         if ! check_internet; then
             end_spin "FAILED" "${T[launch_fail]}"
+            _print_last_log_hint
             return 1
         fi
         if ! dexter_warp_register_api; then
             end_spin "FAILED" "${T[reg_fail]}"
+            _print_last_log_hint
             return 1
         fi
         _service_start
@@ -1630,8 +1688,28 @@ dexter_warp_connect() {
         return 0
     else
         end_spin "FAILED" "${T[verify_fail]}"
+        _print_last_log_hint
         return 1
     fi
+}
+
+# Shows the last few diagnostic log lines directly on screen so the real
+# curl error (DNS/timeout/HTTP code/etc) is visible without digging through
+# the log file manually.
+_print_last_log_hint() {
+    is_minimal && return 0
+    local log_path
+    log_path=$(get_log_path)
+    printf "%b\n" "${YELLOW}---------------------------------------------------------${NC}"
+    printf "%b\n" "${YELLOW}[DEBUG] Last diagnostic log lines (full log: ${log_path}):${NC}"
+    if [ -f "$log_path" ]; then
+        tail -n 8 "$log_path" 2>/dev/null | while IFS= read -r line; do
+            printf "%b\n" "${CYAN}  ${line}${NC}"
+        done
+    else
+        printf "%b\n" "${RED}  Log file not found at ${log_path}${NC}"
+    fi
+    printf "%b\n" "${YELLOW}---------------------------------------------------------${NC}"
 }
 
 dexter_warp_disconnect() {
