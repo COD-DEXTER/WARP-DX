@@ -1182,12 +1182,28 @@ _service_start() {
         log_msg "WARNING" "Port $SOCKS5_PORT still in use after stop, waiting..."
         sleep 2
     fi
-    nohup "$WIREPROXY_BIN" -c "$WIREPROXY_CONF" >/dev/null 2>&1 &
+
+    # Validate the config before launching, so a bad config gives a clear
+    # error instead of a silent crash-on-launch.
+    local configtest_out
+    configtest_out=$("$WIREPROXY_BIN" -c "$WIREPROXY_CONF" -n 2>&1)
+    if [ $? -ne 0 ]; then
+        log_msg "ERROR" "WireProxy config is invalid (wireproxy -n): ${configtest_out:-no output}"
+        return 1
+    fi
+
+    local wireproxy_err_log
+    wireproxy_err_log="${CACHE_DIR}/wireproxy-last-error.log"
+    : > "$wireproxy_err_log" 2>/dev/null
+
+    nohup "$WIREPROXY_BIN" -c "$WIREPROXY_CONF" >"$wireproxy_err_log" 2>&1 &
     local new_pid=$!
     printf '%s\n' "$new_pid" > "$pid_file" 2>/dev/null
     sleep 1
     if ! kill -0 "$new_pid" 2>/dev/null; then
-        log_msg "ERROR" "WireProxy process died immediately after launch"
+        local crash_out
+        crash_out=$(tr -s '\n' ' ' < "$wireproxy_err_log" 2>/dev/null)
+        log_msg "ERROR" "WireProxy process died immediately after launch | exit_output=\"${crash_out:-no output captured}\""
         return 1
     fi
     return 0
@@ -2421,6 +2437,102 @@ dexter_warp_main_menu() {
     done
 }
 
+# ==========================================
+# Section 25: Global Command Installer & CLI Dispatch
+# ==========================================
+# Copies this script to SCRIPT_PATH (e.g. /usr/local/bin/dexter-warp) and
+# creates a short "warp" symlink next to it, so the tool is reachable the
+# same way regardless of how it was first downloaded/run. Safe to run on
+# every launch: it's a no-op once the script is already installed there.
+_self_install_global_command() {
+    [ -z "${SCRIPT_PATH:-}" ] && return 0
+
+    local self_path target_real
+    self_path=$(readlink -f "$0" 2>/dev/null || echo "$0")
+    target_real=$(readlink -f "$SCRIPT_PATH" 2>/dev/null || echo "$SCRIPT_PATH")
+
+    if [ "$self_path" != "$target_real" ]; then
+        mkdir -p "$(dirname "$SCRIPT_PATH")" 2>/dev/null
+        if cp -f "$self_path" "$SCRIPT_PATH" 2>/dev/null; then
+            chmod +x "$SCRIPT_PATH" 2>/dev/null
+        fi
+    fi
+
+    local link_dir="/usr/local/bin"
+    [ "$(id -u)" -ne 0 ] 2>/dev/null && link_dir="$(dirname "$SCRIPT_PATH")"
+
+    if [ -d "$link_dir" ] && [ -w "$link_dir" ] 2>/dev/null; then
+        ln -sf "$SCRIPT_PATH" "${link_dir}/warp" 2>/dev/null
+        ln -sf "$SCRIPT_PATH" "${link_dir}/dexter-warp" 2>/dev/null
+    fi
+}
+
+_print_cli_help() {
+    printf "%b\n" "${CYAN}WARP DX v${VERSION} - usage:${NC}"
+    printf "  %-22s %s\n" "warp" "Open the interactive menu"
+    printf "  %-22s %s\n" "warp menu" "Same as above"
+    printf "  %-22s %s\n" "warp up|connect|start" "Install (if needed) and connect"
+    printf "  %-22s %s\n" "warp down|disconnect|stop" "Disconnect WARP"
+    printf "  %-22s %s\n" "warp restart" "Restart the WARP service"
+    printf "  %-22s %s\n" "warp status" "Show current connection status"
+    printf "  %-22s %s\n" "warp install" "Run the full install flow"
+    printf "  %-22s %s\n" "warp newip" "Rotate to a new WARP identity"
+    printf "  %-22s %s\n" "warp logs" "View recent logs"
+    printf "  %-22s %s\n" "warp version" "Print the script version"
+}
+
+# Dispatches CLI subcommands so "warp up", "warp down", "warp status", etc.
+# all work consistently from any shell once installed, in addition to the
+# plain interactive "warp" / "warp menu" entry point.
+_dexter_warp_cli_dispatch() {
+    case "${1:-menu}" in
+        menu)
+            dexter_warp_main_menu
+            ;;
+        up|connect|start)
+            if dexter_warp_is_installed; then dexter_warp_connect; else dexter_warp_install; fi
+            exit $?
+            ;;
+        down|disconnect|stop)
+            dexter_warp_disconnect
+            exit $?
+            ;;
+        restart)
+            dexter_warp_restart
+            exit $?
+            ;;
+        status)
+            dexter_warp_status
+            exit $?
+            ;;
+        install)
+            dexter_warp_install
+            exit $?
+            ;;
+        newip|new-identity)
+            dexter_warp_new_identity
+            exit $?
+            ;;
+        logs)
+            dexter_warp_view_logs
+            exit $?
+            ;;
+        version|-v|--version)
+            printf "%s\n" "$VERSION"
+            exit 0
+            ;;
+        help|-h|--help)
+            _print_cli_help
+            exit 0
+            ;;
+        *)
+            printf "%b\n" "${RED}Unknown command: ${1}${NC}"
+            _print_cli_help
+            exit 1
+            ;;
+    esac
+}
+
 # ========== Entry Point ==========
 RUN_MODE="${RUN_MODE:-$(detect_environment)}"
 CURRENT_MODE="$RUN_MODE"
@@ -2430,10 +2542,16 @@ load_config
 CURRENT_MODE="$RUN_MODE"
 _ensure_dirs
 _reset_self_heal_state
+_self_install_global_command
 
 if ! acquire_lock; then
     printf "%b\n" "${RED}[ERROR] Another instance is already running.${NC}"
     exit 1
 fi
 
-dexter_warp_main_menu
+if ! dexter_warp_check_os; then
+    printf "%b\n" "${RED}[ERROR] Operating system is not supported.${NC}"
+    exit 1
+fi
+
+_dexter_warp_cli_dispatch "$@"
