@@ -1388,9 +1388,9 @@ dexter_warp_register_api() {
         if [ -n "$response" ] && [ "$response" != "null" ]; then
             local check_id
             if command -v jq &>/dev/null; then
-                check_id=$(echo "$response" | jq -r '.result.id' 2>/dev/null)
+                check_id=$(echo "$response" | jq -r '.id // .result.id // empty' 2>/dev/null)
             else
-                check_id=$(echo "$response" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p' 2>/dev/null | head -n1)
+                check_id=$(echo "$response" | grep -o '"id"[[:space:]]*:[[:space:]]*"[^"]*"' 2>/dev/null | head -n1 | sed 's/.*"\([^"]*\)"$/\1/')
             fi
             if [[ -n "$check_id" ]] && [ "$check_id" != "null" ]; then
                 success=true
@@ -1413,20 +1413,20 @@ dexter_warp_register_api() {
     WG_PRIV_KEY="$private_key"
 
     if command -v jq &>/dev/null; then
-        WG_PEER_PUB_KEY=$(echo "$response" | jq -r '.result.config.peers[0].public_key // empty' 2>/dev/null)
-        WG_PEER_ENDPOINT=$(echo "$response" | jq -r '.result.config.peers[0].endpoint.v4 // empty' 2>/dev/null)
-        WG_IPV4=$(echo "$response" | jq -r '.result.config.interface.addresses.v4 // empty' 2>/dev/null)
-        WG_IPV6=$(echo "$response" | jq -r '.result.config.interface.addresses.v6 // empty' 2>/dev/null)
-        WG_REG_ID=$(echo "$response" | jq -r '.result.id // empty' 2>/dev/null)
-        WG_REG_TOKEN=$(echo "$response" | jq -r '.result.token // empty' 2>/dev/null)
+        WG_PEER_PUB_KEY=$(echo "$response" | jq -r '.config.peers[0].public_key // .result.config.peers[0].public_key // empty' 2>/dev/null)
+        WG_PEER_ENDPOINT=$(echo "$response" | jq -r '.config.peers[0].endpoint.v4 // .result.config.peers[0].endpoint.v4 // empty' 2>/dev/null)
+        WG_IPV4=$(echo "$response" | jq -r '.config.interface.addresses.v4 // .result.config.interface.addresses.v4 // empty' 2>/dev/null)
+        WG_IPV6=$(echo "$response" | jq -r '.config.interface.addresses.v6 // .result.config.interface.addresses.v6 // empty' 2>/dev/null)
+        WG_REG_ID=$(echo "$response" | jq -r '.id // .result.id // empty' 2>/dev/null)
+        WG_REG_TOKEN=$(echo "$response" | jq -r '.token // .result.token // empty' 2>/dev/null)
     else
-        log_msg "WARNING" "jq not available, using sed fallback for JSON parsing"
-        WG_PEER_PUB_KEY=$(echo "$response" | sed -n 's/.*"public_key"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' 2>/dev/null | head -n1)
-        WG_PEER_ENDPOINT=$(echo "$response" | sed -n 's/.*"v4"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' 2>/dev/null | head -n1)
-        WG_IPV4=$(echo "$response" | grep -o '"v4"[[:space:]]*:[[:space:]]*"[^"]*"' 2>/dev/null | head -n1 | sed 's/.*"\([^"]*\)"$/\1/')
-        WG_IPV6=$(echo "$response" | grep -o '"v6"[[:space:]]*:[[:space:]]*"[^"]*"' 2>/dev/null | head -n1 | sed 's/.*"\([^"]*\)"$/\1/')
-        WG_REG_ID=$(echo "$response" | sed -n 's/.*"id"[[:space:]]*:[[:space:]]*"\([a-f0-9-]*\)".*/\1/p' 2>/dev/null | head -n1)
-        WG_REG_TOKEN=$(echo "$response" | sed -n 's/.*"token"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' 2>/dev/null | head -n1)
+        log_msg "WARNING" "jq not available, using grep/sed fallback for JSON parsing"
+        WG_PEER_PUB_KEY=$(echo "$response" | grep -o '"public_key"[[:space:]]*:[[:space:]]*"[^"]*"' 2>/dev/null | head -n1 | sed 's/.*"\([^"]*\)"$/\1/')
+        WG_PEER_ENDPOINT=$(echo "$response" | grep -o '"v4"[[:space:]]*:[[:space:]]*"[^"]*"' 2>/dev/null | head -n1 | sed 's/.*"\([^"]*\)"$/\1/')
+        WG_IPV4=$(echo "$response" | grep -o '"v4"[[:space:]]*:[[:space:]]*"[^"]*"' 2>/dev/null | sed -n 2p | sed 's/.*"\([^"]*\)"$/\1/')
+        WG_IPV6=$(echo "$response" | grep -o '"v6"[[:space:]]*:[[:space:]]*"[^"]*"' 2>/dev/null | sed -n 2p | sed 's/.*"\([^"]*\)"$/\1/')
+        WG_REG_ID=$(echo "$response" | grep -o '"id"[[:space:]]*:[[:space:]]*"[^"]*"' 2>/dev/null | head -n1 | sed 's/.*"\([^"]*\)"$/\1/')
+        WG_REG_TOKEN=$(echo "$response" | grep -o '"token"[[:space:]]*:[[:space:]]*"[^"]*"' 2>/dev/null | head -n1 | sed 's/.*"\([^"]*\)"$/\1/')
     fi
 
     [ -z "$WG_PEER_PUB_KEY" ] || [ "$WG_PEER_PUB_KEY" = "null" ] && { log_msg "ERROR" "Invalid peer public key from API"; return 1; }
