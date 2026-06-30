@@ -1449,6 +1449,18 @@ dexter_warp_register_api() {
     [ -z "$WG_PEER_ENDPOINT" ] || [ "$WG_PEER_ENDPOINT" = "null" ] && { log_msg "ERROR" "Invalid endpoint from API"; return 1; }
     [ -z "$WG_IPV4" ] || [ "$WG_IPV4" = "null" ] && { log_msg "ERROR" "Invalid IPv4 from API"; return 1; }
 
+    # Cloudflare's registration API always returns the endpoint with port 0
+    # (e.g. "162.159.192.5:0") as a placeholder; the real port must come
+    # from its known-good WARP port list. Swap it in here so the very first
+    # config we write is already usable instead of relying on a later
+    # self-heal pass to fix it.
+    local ep_host="${WG_PEER_ENDPOINT%%:*}"
+    local ep_port="${WG_PEER_ENDPOINT##*:}"
+    if [ -z "$ep_port" ] || [ "$ep_port" = "0" ] || ! [[ "$ep_port" =~ ^[0-9]+$ ]]; then
+        WG_PEER_ENDPOINT="${ep_host}:2408"
+        log_msg "INFO" "Replaced placeholder endpoint port with default 2408 (was \"${ep_host}:${ep_port}\")"
+    fi
+
     save_config
     dexter_warp_generate_wireproxy_conf "$WG_IPV4" "$WG_PRIV_KEY" "$WG_PEER_PUB_KEY" "$WG_PEER_ENDPOINT" "$WG_IPV6"
 }
@@ -1460,32 +1472,38 @@ dexter_warp_generate_wireproxy_conf() {
     local peer_endpoint="$4"
     local ipv6="$5"
 
-    local self_interface=""
+    local address_line=""
     local dns_servers=""
+    local allowed_ips="0.0.0.0/0"
 
     case "$IP_VERSION" in
         4)
-            self_interface="$ipv4"
+            address_line="${ipv4}/32"
             dns_servers="1.1.1.1"
+            allowed_ips="0.0.0.0/0"
             ;;
         6)
             if ! check_ipv6_available; then
                 printf "%b\n" "${YELLOW}[WARNING] IPv6 not available on this system. Falling back to IPv4.${NC}"
                 IP_VERSION="4"
-                self_interface="$ipv4"
+                address_line="${ipv4}/32"
                 dns_servers="1.1.1.1"
+                allowed_ips="0.0.0.0/0"
             else
-                self_interface="$ipv6"
+                address_line="${ipv6}/128"
                 dns_servers="2606:4700:4700::1111"
+                allowed_ips="::/0"
             fi
             ;;
         dual)
             if check_ipv6_available; then
-                self_interface="${ipv4}, ${ipv6}"
+                address_line="${ipv4}/32, ${ipv6}/128"
                 dns_servers="1.1.1.1, 2606:4700:4700::1111"
+                allowed_ips="0.0.0.0/0, ::/0"
             else
-                self_interface="$ipv4"
+                address_line="${ipv4}/32"
                 dns_servers="1.1.1.1"
+                allowed_ips="0.0.0.0/0"
             fi
             ;;
     esac
@@ -1493,15 +1511,16 @@ dexter_warp_generate_wireproxy_conf() {
     mkdir -p "$(dirname "$WIREPROXY_CONF")" 2>/dev/null || true
     local tmp_conf="${WIREPROXY_CONF}.tmp.$$"
     cat <<EOF > "$tmp_conf"
-[WG]
-SelfInterface = $self_interface
+[Interface]
 PrivateKey = $private_key
+Address = $address_line
 DNS = $dns_servers
 
 [Peer]
 PublicKey = $peer_pubkey
 Endpoint = $peer_endpoint
-KeepAlive = 25
+AllowedIPs = $allowed_ips
+PersistentKeepalive = 25
 
 [Socks5]
 BindAddress = $PROXY_IP:$SOCKS5_PORT
