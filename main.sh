@@ -498,7 +498,25 @@ safe_cleanup() {
         wait "$SPIN_PID" 2>/dev/null || true
         SPIN_PID=""
     fi
-    pkill -P "$$" 2>/dev/null || true
+    # IMPORTANT: do NOT blindly "pkill -P $$" here. wireproxy is launched
+    # via "nohup ... &" in _service_start, which only makes it immune to
+    # SIGHUP -- it is still a direct child of this script's PID. A blanket
+    # pkill -P "$$" on every exit path (including normal menu exit via
+    # option 0, Ctrl+C, and SSH disconnect delivering SIGHUP) was killing
+    # the running wireproxy/WARP tunnel every single time the menu closed,
+    # which is why the connection never survived leaving the script. We
+    # still want to reap any *other* stray child processes (e.g. a spinner
+    # or curl call that didn't get cleaned up), so kill children
+    # individually while explicitly skipping the tracked wireproxy PID.
+    local _cl_wpid=""
+    if [ -n "${PID_FILE:-}" ] && [ -f "$PID_FILE" ]; then
+        read -r _cl_wpid < "$PID_FILE" 2>/dev/null || _cl_wpid=""
+    fi
+    local _cl_child
+    for _cl_child in $(pgrep -P "$$" 2>/dev/null); do
+        [ -n "$_cl_wpid" ] && [ "$_cl_child" = "$_cl_wpid" ] && continue
+        kill "$_cl_child" 2>/dev/null || true
+    done
     local _cl_lock
     _cl_lock=$(get_lock_path)
     rm -f "$_cl_lock" "${_cl_lock}.pid" 2>/dev/null || true
@@ -1255,6 +1273,10 @@ _service_start() {
 
     nohup "$WIREPROXY_BIN" -c "$WIREPROXY_CONF" >"$wireproxy_err_log" 2>&1 &
     local new_pid=$!
+    # Detach fully from this shell's job table. Combined with the
+    # safe_cleanup fix above, this is a second layer of protection so the
+    # tunnel process survives menu exit, Ctrl+C, and SSH disconnects.
+    disown "$new_pid" 2>/dev/null || disown 2>/dev/null || true
     printf '%s\n' "$new_pid" > "$pid_file" 2>/dev/null
     sleep 1
     if ! kill -0 "$new_pid" 2>/dev/null; then
@@ -2602,16 +2624,10 @@ _self_install_global_command() {
         local install_ok=false
         if [ "$self_is_pipe" = true ]; then
             local tmp_self="/tmp/dexter-warp-self_$$.sh"
-            local dl_url
-            for dl_url in \
-                "https://raw.githubusercontent.com/COD-DEXTER/WARP-DX/main/main.sh" \
-                "https://cdn.jsdelivr.net/gh/COD-DEXTER/WARP-DX@main/main.sh"; do
-                if http_download "$dl_url" -o "$tmp_self" \
-                   && [ -s "$tmp_self" ] && bash -n "$tmp_self" 2>/dev/null; then
-                    mv -f "$tmp_self" "$SCRIPT_PATH" 2>/dev/null && install_ok=true
-                    break
-                fi
-            done
+            if http_download "https://raw.githubusercontent.com/COD-DEXTER/WARP-DX/main/main.sh" -o "$tmp_self" \
+               && [ -s "$tmp_self" ] && bash -n "$tmp_self" 2>/dev/null; then
+                mv -f "$tmp_self" "$SCRIPT_PATH" 2>/dev/null && install_ok=true
+            fi
             rm -f "$tmp_self" 2>/dev/null
         else
             cp -f "$self_path" "$SCRIPT_PATH" 2>/dev/null && [ -s "$SCRIPT_PATH" ] && install_ok=true
@@ -2695,22 +2711,21 @@ _self_install_global_command() {
 
 _print_cli_help() {
     printf "%b\n" "${CYAN}WARP DX v${VERSION} - usage:${NC}"
-    printf "  %-22s %s\n" "warp-dx" "Open the interactive menu"
-    printf "  %-22s %s\n" "warp-dx menu" "Same as above"
-    printf "  %-22s %s\n" "warp-dx up|connect|start" "Install (if needed) and connect"
-    printf "  %-22s %s\n" "warp-dx down|disconnect|stop" "Disconnect WARP"
-    printf "  %-22s %s\n" "warp-dx restart" "Restart the WARP service"
-    printf "  %-22s %s\n" "warp-dx status" "Show current connection status"
-    printf "  %-22s %s\n" "warp-dx install" "Run the full install flow"
-    printf "  %-22s %s\n" "warp-dx newip" "Rotate to a new WARP identity"
-    printf "  %-22s %s\n" "warp-dx logs" "View recent logs"
-    printf "  %-22s %s\n" "warp-dx version" "Print the script version"
-    printf "  %-22s %s\n" "warp-dx --force" "Clear a stale script lock (does NOT touch a running WARP connection)"
+    printf "  %-22s %s\n" "warp" "Open the interactive menu"
+    printf "  %-22s %s\n" "warp menu" "Same as above"
+    printf "  %-22s %s\n" "warp up|connect|start" "Install (if needed) and connect"
+    printf "  %-22s %s\n" "warp down|disconnect|stop" "Disconnect WARP"
+    printf "  %-22s %s\n" "warp restart" "Restart the WARP service"
+    printf "  %-22s %s\n" "warp status" "Show current connection status"
+    printf "  %-22s %s\n" "warp install" "Run the full install flow"
+    printf "  %-22s %s\n" "warp newip" "Rotate to a new WARP identity"
+    printf "  %-22s %s\n" "warp logs" "View recent logs"
+    printf "  %-22s %s\n" "warp version" "Print the script version"
 }
 
-# Dispatches CLI subcommands so "warp-dx up", "warp-dx down", "warp-dx
-# status", etc. all work consistently from any shell once installed, in
-# addition to the plain interactive "warp-dx" / "warp-dx menu" entry point.
+# Dispatches CLI subcommands so "warp up", "warp down", "warp status", etc.
+# all work consistently from any shell once installed, in addition to the
+# plain interactive "warp" / "warp menu" entry point.
 _dexter_warp_cli_dispatch() {
     case "${1:-menu}" in
         menu)
@@ -2769,20 +2784,6 @@ load_config
 CURRENT_MODE="$RUN_MODE"
 _ensure_dirs
 _reset_self_heal_state
-
-# --force / -f: clear a stale LOCK belonging to THIS script only (i.e. a
-# leftover lock file from a session that crashed without cleaning up).
-# This intentionally does NOT touch wireproxy or its config in any way -
-# a stuck script lock and a working WARP connection are unrelated, and
-# forcing this flag should never be able to disconnect an active tunnel.
-if [[ "${1:-}" == "--force" || "${1:-}" == "-f" ]]; then
-    _fl="$(get_lock_path)"
-    rm -f "$_fl" "${_fl}.pid" 2>/dev/null
-    rm -rf "${_fl}.dir" 2>/dev/null
-    printf "%b\n" "${GREEN}[✓] Cleared this script's lock file (WARP connection, if any, was left untouched).${NC}"
-    shift
-fi
-
 _self_install_global_command
 
 if ! acquire_lock; then
@@ -2792,7 +2793,7 @@ if ! acquire_lock; then
     printf "%b\n" "${RED}[ERROR] Another instance is already running.${NC}"
     if [ -n "$_lock_holder_pid" ]; then
         printf "%b\n" "${YELLOW}    Held by PID ${_lock_holder_pid}. Check with: ps -p ${_lock_holder_pid}${NC}"
-        printf "%b\n" "${YELLOW}    If that's a stuck/old session (not an active WARP connection), clear it with: ${CYAN}warp-dx --force${NC}"
+        printf "%b\n" "${YELLOW}    If that's a stuck/old session, you can force-clear it with: kill ${_lock_holder_pid} 2>/dev/null; rm -f $(get_lock_path) $(get_lock_path).pid${NC}"
     fi
     exit 1
 fi
