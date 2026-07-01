@@ -2058,28 +2058,24 @@ dexter_warp_change_port() {
     if [ -n "$WG_PRIV_KEY" ]; then
         dexter_warp_generate_wireproxy_conf "$WG_IPV4" "$WG_PRIV_KEY" "$WG_PEER_PUB_KEY" "$WG_PEER_ENDPOINT" "$WG_IPV6"
     fi
-    dexter_warp_connect
 
-    local success=false
-    local i
-    for ((i = 1; i <= 15; i++)); do
-        if port_in_use "$SOCKS5_PORT"; then
-            local test_bypass
-            test_bypass=$(cf_trace "--socks5 ${PROXY_IP}:${SOCKS5_PORT}")
-            if [ -n "$test_bypass" ]; then
-                success=true
-                break
-            fi
-        fi
-        sleep 0.5
-    done
-
-    if [ "$success" = true ]; then
+    # dexter_warp_connect() already performs full verification of the new
+    # port internally: wait_for_port (listening check) followed by
+    # dexter_warp_verify_wireproxy_connection, which does a real SOCKS5
+    # traffic check against ${PROXY_IP}:${SOCKS5_PORT} with several
+    # retries and even triggers self-healing if needed. Re-checking here
+    # with a second, separate loop was strictly weaker: a single cf_trace
+    # call can itself take close to the curl timeout (~5s), so the old
+    # 15-iteration/0.5s-sleep loop (nominally 7.5s) often only got through
+    # 1-2 real attempts before giving up -- producing a false "verification
+    # timed out" warning even when dexter_warp_connect had already
+    # confirmed the tunnel was working. Trust its result directly instead.
+    if dexter_warp_connect; then
         printf "%b\n" "${GREEN}[✓] SOCKS5 port changed to $PROXY_IP:$SOCKS5_PORT.${NC}"
         log_msg "INFO" "SOCKS5 port changed to $PROXY_IP:$SOCKS5_PORT"
     else
-        printf "%b\n" "${RED}[WARNING] Port changed but verification timed out.${NC}"
-        log_msg "WARNING" "SOCKS5 port changed but verify timed out"
+        printf "%b\n" "${RED}[WARNING] Port changed but connection verification failed. Check logs (option 9) for details.${NC}"
+        log_msg "WARNING" "SOCKS5 port changed but verify failed"
     fi
 }
 
