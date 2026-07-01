@@ -23,6 +23,14 @@ CACHE_FILE="${CACHE_DIR}/ip"
 
 DEFAULT_SOCKS5_PORT="10808"
 DEFAULT_PROXY_IP="127.0.0.1"
+# Conservative MTU for the WireGuard interface. WireGuard adds ~60-80 bytes
+# of overhead per packet; inside nested Docker/VPS environments the
+# effective path MTU is often lower than the host's 1500, which causes the
+# handshake to succeed (small UDP packets) while all real data traffic
+# silently blackholes (large packets get dropped, no ICMP frag-needed
+# makes it back). 1280 is the IPv6 minimum-safe MTU and avoids this almost
+# everywhere at the cost of slightly more packet overhead.
+DEFAULT_WG_MTU="1280"
 
 SOCKS5_PORT="$DEFAULT_SOCKS5_PORT"
 PROXY_IP="$DEFAULT_PROXY_IP"
@@ -37,6 +45,7 @@ WG_IPV4=""
 WG_IPV6=""
 WG_REG_ID=""
 WG_REG_TOKEN=""
+WG_MTU=""
 
 # Cyberpunk Neon Rebranded Color Scheme
 RED='\033[0;31m'
@@ -642,7 +651,8 @@ http_get() {
     marker="HTTPCODE_MARKER_"
     stderr_file=$(mktemp 2>/dev/null) || stderr_file="/tmp/.dexter_http_err.$$"
 
-    out=$(curl -s --fail --retry 2 --connect-timeout 3 --max-time 5 \
+    out=$(curl -s --fail --retry "${HTTP_RETRY:-2}" \
+        --connect-timeout "${HTTP_CONNECT_TIMEOUT:-3}" --max-time "${HTTP_MAX_TIME:-5}" \
         -w "${marker}%{http_code}" "$@" "$url" 2>"$stderr_file")
     exit_code=$?
 
@@ -1515,6 +1525,7 @@ dexter_warp_generate_wireproxy_conf() {
 PrivateKey = $private_key
 Address = $address_line
 DNS = $dns_servers
+MTU = ${WG_MTU:-$DEFAULT_WG_MTU}
 
 [Peer]
 PublicKey = $peer_pubkey
@@ -1544,7 +1555,12 @@ dexter_warp_verify_connection_traffic() {
     local ep
     for ep in "${endpoints[@]}"; do
         local result
-        result=$(http_get "$ep" $proxy_args 2>/dev/null)
+        # Traffic through a freshly-started WireGuard tunnel is noticeably
+        # slower than a direct request (first handshake + route setup);
+        # give it real headroom instead of the tight 3s/5s defaults used
+        # for plain connectivity checks, and skip curl's own --retry so
+        # the full budget goes to one attempt per endpoint.
+        result=$(HTTP_CONNECT_TIMEOUT=5 HTTP_MAX_TIME=12 HTTP_RETRY=0 http_get "$ep" $proxy_args 2>/dev/null)
         if [ -n "$result" ]; then
             return 0
         fi
@@ -1564,6 +1580,12 @@ dexter_warp_verify_wireproxy_connection() {
         log_msg "WARNING" "Port listening verify timeout"
         return 1
     fi
+
+    # Port being open just means wireproxy's SOCKS5 listener is up; the
+    # WireGuard handshake and internal routing can still be settling for a
+    # moment after that, so give it a brief head start before hammering it
+    # with the traffic check below.
+    sleep 2
 
     is_minimal || printf "%b\n" "${CYAN}Verifying SOCKS5 traffic flow...${NC}"
     local proxy_ok=false
