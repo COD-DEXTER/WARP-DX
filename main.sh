@@ -2460,13 +2460,7 @@ dexter_warp_draw_menu() {
             clean=$(printf '%s' "$raw" | sed 's/\x1b\[[0-9;]*[a-zA-Z]//g' 2>/dev/null)
         fi
         local vislen=${#clean}
-        # Must match the actual box border width below (59 total chars:
-        # "+" + 57 dashes + "+"), accounting for the leading "| " prefix
-        # and trailing "|" that print_line adds around every line. If this
-        # drifts out of sync with the border (e.g. after resizing the
-        # ASCII banner/box), every line silently overflows past the right
-        # edge by a constant amount, and long lines break out visibly.
-        local bw=56
+        local bw=73
         local inner=$((bw - vislen))
         [ "$inner" -lt 0 ] && inner=0
         printf "%b\n" "${CYAN}|${NC} ${raw}$(printf '%*s' "$inner" '')${CYAN}|${NC}"
