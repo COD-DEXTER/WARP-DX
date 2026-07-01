@@ -885,8 +885,17 @@ port_in_use() {
         ss -H -tln 2>/dev/null | awk -v p=":$1" '$4 ~ (p"$") { found=1; exit } END { exit(found?0:1) }' && return 0
     fi
 
+    # NOTE: BusyBox's lsof does not implement the -i / -sTCP:LISTEN filters.
+    # It silently ignores them and dumps every open file descriptor on the
+    # system instead, which is always non-empty and always exits 0 -- so a
+    # bare "lsof -i :$port -sTCP:LISTEN && return 0" check is a permanent
+    # false positive on BusyBox systems (reports every port as in-use, e.g.
+    # even port 1, which is never listening). Requiring "LISTEN" to
+    # literally appear in the output filters this out: real lsof always
+    # prints a LISTEN state column for a listening socket, while BusyBox's
+    # unfiltered fd dump never contains that word.
     if command -v lsof &>/dev/null; then
-        lsof -i :"$port" -sTCP:LISTEN &>/dev/null && return 0
+        lsof -i :"$port" -sTCP:LISTEN 2>/dev/null | grep -q "LISTEN" && return 0
     fi
     if command -v netstat &>/dev/null; then
         netstat -an 2>/dev/null | grep -q -E "LISTEN.*[.:]$port\b" && return 0
