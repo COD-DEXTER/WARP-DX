@@ -906,6 +906,22 @@ wait_for_port() {
     return 1
 }
 
+# Opposite of wait_for_port: waits until the port becomes FREE instead of
+# waiting until it becomes listening. Used after stopping a service, where
+# we need to confirm the OS actually released the socket before treating
+# that port as available again.
+wait_for_port_free() {
+    local port="$1"
+    local max_wait="${2:-10}"
+    local interval="${3:-0.5}"
+    local i
+    for ((i = 1; i <= max_wait * 2; i++)); do
+        port_in_use "$port" || return 0
+        sleep "$interval"
+    done
+    return 1
+}
+
 # ==========================================
 # Section 11: Status Checks
 # ==========================================
@@ -1231,12 +1247,12 @@ _service_stop() {
     if [ "$CURRENT_MODE" = "VPS" ]; then
         if [ "$IS_ALPINE" = true ] && [ -f /etc/init.d/wireproxy ] && command -v rc-service &>/dev/null; then
             rc-service wireproxy stop &>/dev/null || true
-            wait_for_port "$SOCKS5_PORT" 10 0.5
+            wait_for_port_free "$SOCKS5_PORT" 10 0.5
             return
         fi
         if [ -f /etc/systemd/system/wireproxy.service ] && command -v systemctl &>/dev/null; then
             systemctl stop wireproxy &>/dev/null || true
-            wait_for_port "$SOCKS5_PORT" 10 0.5
+            wait_for_port_free "$SOCKS5_PORT" 10 0.5
             return
         fi
     fi
@@ -1250,7 +1266,7 @@ _service_stop() {
     else
         pkill -f "wireproxy.*-c.*${WIREPROXY_CONF}" 2>/dev/null || pkill -x wireproxy 2>/dev/null || true
     fi
-    wait_for_port "$SOCKS5_PORT" 10 0.5
+    wait_for_port_free "$SOCKS5_PORT" 10 0.5
 }
 
 # ==========================================
@@ -2504,6 +2520,19 @@ _self_install_global_command() {
 
     local self_path target_real was_first_install=false
     self_path=$(readlink -f "$0" 2>/dev/null || echo "$0")
+
+    # Repair a previous buggy install: if SCRIPT_PATH itself ended up as a
+    # broken/self-referential symlink (a symlink pointing at its own path),
+    # readlink -f cannot resolve it and it must be removed before we can
+    # write a real file there again.
+    if [ -L "$SCRIPT_PATH" ]; then
+        local existing_link_target
+        existing_link_target=$(readlink "$SCRIPT_PATH" 2>/dev/null)
+        if [ "$existing_link_target" = "$SCRIPT_PATH" ] || [ ! -e "$SCRIPT_PATH" ]; then
+            rm -f "$SCRIPT_PATH" 2>/dev/null
+        fi
+    fi
+
     target_real=$(readlink -f "$SCRIPT_PATH" 2>/dev/null || echo "$SCRIPT_PATH")
 
     if [ "$self_path" != "$target_real" ]; then
@@ -2519,20 +2548,31 @@ _self_install_global_command() {
     local link_dir="/usr/local/bin"
     [ "$(id -u)" -ne 0 ] 2>/dev/null && link_dir="$(dirname "$SCRIPT_PATH")"
 
-    local links_ok=false
-    if [ -d "$link_dir" ] && [ -w "$link_dir" ] 2>/dev/null; then
-        if ln -sf "$SCRIPT_PATH" "${link_dir}/warp" 2>/dev/null && \
-           ln -sf "$SCRIPT_PATH" "${link_dir}/dexter-warp" 2>/dev/null; then
-            links_ok=true
+    local links_ok=true
+    local alias_name
+    # NOTE: SCRIPT_PATH itself may already BE "${link_dir}/dexter-warp" (the
+    # default install path). Creating a symlink with that exact same path
+    # as both source and destination would overwrite the real installed
+    # file with a self-referencing symlink pointing at itself, destroying
+    # it. Skip any alias whose target path is identical to SCRIPT_PATH.
+    for alias_name in warp warp-dx dexter-warp; do
+        local link_path="${link_dir}/${alias_name}"
+        if [ "$link_path" = "$SCRIPT_PATH" ]; then
+            continue
         fi
-    fi
+        if [ -d "$link_dir" ] && [ -w "$link_dir" ] 2>/dev/null; then
+            ln -sf "$SCRIPT_PATH" "$link_path" 2>/dev/null || links_ok=false
+        else
+            links_ok=false
+        fi
+    done
 
     if [ "$was_first_install" = true ]; then
         if [ "$links_ok" = true ]; then
-            printf "%b\n" "${GREEN}[✓] Installed. From now on just run: ${CYAN}warp${GREEN} (or ${CYAN}warp menu${GREEN}) from anywhere.${NC}"
-            log_msg "INFO" "Global command installed at $SCRIPT_PATH, linked as ${link_dir}/warp"
+            printf "%b\n" "${GREEN}[✓] Installed. From now on just run: ${CYAN}warp-dx${GREEN} (or ${CYAN}warp${GREEN}) from anywhere.${NC}"
+            log_msg "INFO" "Global command installed at $SCRIPT_PATH, linked as ${link_dir}/warp-dx"
         else
-            printf "%b\n" "${YELLOW}[!] Copied to $SCRIPT_PATH but could not create '${link_dir}/warp' symlink (check permissions). Run with: $SCRIPT_PATH${NC}"
+            printf "%b\n" "${YELLOW}[!] Copied to $SCRIPT_PATH but could not create alias symlinks (check permissions). Run with: $SCRIPT_PATH${NC}"
             log_msg "WARNING" "Symlink creation failed in $link_dir"
         fi
     fi
