@@ -856,32 +856,40 @@ safe_kill() {
 
 port_in_use() {
     local port="$1"
-    if command -v ss &>/dev/null; then
-        ss -H -tln "sport = :$port" 2>/dev/null | grep -q . && return 0
-    fi
-    
-    # Active SOCKS5 State verification (TCP_LISTEN is represented by hex code "0A")
-    local files="/proc/net/tcp"
-    [ -f /proc/net/tcp6 ] && files="$files /proc/net/tcp6"
-    
     local hex_port
     hex_port=$(printf '%04X' "$port")
-    local line
-    for f in $files; do
-        if [ -f "$f" ]; then
-            while IFS= read -r line; do
-                case "$line" in
-                    *":${hex_port}"*"0A"*) return 0 ;;
-                esac
-            done < "$f"
+
+    # Parse /proc/net/tcp[6] precisely by column (local_address is field 2,
+    # connection state is field 4) instead of loose substring matching.
+    # A naive "does 0A appear anywhere after the port" check produces
+    # frequent false positives: hex remote-address bytes or queue/timer
+    # fields can easily contain the substring "0A" for connections that
+    # are NOT actually LISTEN sockets on our port (e.g. remote address
+    # 0A684FA0:01BB is an ESTABLISHED connection, state 01, yet the "0A"
+    # from its own IP would wrongly match the old pattern).
+    local f
+    for f in /proc/net/tcp /proc/net/tcp6; do
+        [ -f "$f" ] || continue
+        if awk -v want="$hex_port" '
+            NR > 1 {
+                split($2, la, ":")
+                if (la[2] == want && $4 == "0A") { found=1; exit }
+            }
+            END { exit(found ? 0 : 1) }
+        ' "$f" 2>/dev/null; then
+            return 0
         fi
     done
+
+    if command -v ss &>/dev/null; then
+        ss -H -tln 2>/dev/null | awk -v p=":$1" '$4 ~ (p"$") { found=1; exit } END { exit(found?0:1) }' && return 0
+    fi
 
     if command -v lsof &>/dev/null; then
         lsof -i :"$port" -sTCP:LISTEN &>/dev/null && return 0
     fi
     if command -v netstat &>/dev/null; then
-        netstat -an 2>/dev/null | grep -q -E "LISTEN.*:$port" && return 0
+        netstat -an 2>/dev/null | grep -q -E "LISTEN.*[.:]$port\b" && return 0
     fi
     return 1
 }
@@ -2370,7 +2378,13 @@ dexter_warp_draw_menu() {
         return 0
     fi
 
-    clear
+    # 'clear' relies on the terminfo database for $TERM; in minimal/Alpine
+    # Docker images that database is often missing, so 'clear' silently
+    # does nothing and new menu output just gets appended below the old
+    # screen, looking like a "half old / half new" flash on redraw. Emit a
+    # raw ANSI clear+home sequence as a guaranteed fallback alongside it.
+    clear 2>/dev/null
+    printf '\033[3J\033[H\033[2J'
     local is_connected="no"
     dexter_warp_is_connected && is_connected="yes"
     local socks5_ip="N/A"
@@ -2488,23 +2502,39 @@ dexter_warp_main_menu() {
 _self_install_global_command() {
     [ -z "${SCRIPT_PATH:-}" ] && return 0
 
-    local self_path target_real
+    local self_path target_real was_first_install=false
     self_path=$(readlink -f "$0" 2>/dev/null || echo "$0")
     target_real=$(readlink -f "$SCRIPT_PATH" 2>/dev/null || echo "$SCRIPT_PATH")
 
     if [ "$self_path" != "$target_real" ]; then
+        [ ! -f "$SCRIPT_PATH" ] && was_first_install=true
         mkdir -p "$(dirname "$SCRIPT_PATH")" 2>/dev/null
         if cp -f "$self_path" "$SCRIPT_PATH" 2>/dev/null; then
             chmod +x "$SCRIPT_PATH" 2>/dev/null
+        else
+            log_msg "WARNING" "Could not copy script to $SCRIPT_PATH (permission denied?)"
         fi
     fi
 
     local link_dir="/usr/local/bin"
     [ "$(id -u)" -ne 0 ] 2>/dev/null && link_dir="$(dirname "$SCRIPT_PATH")"
 
+    local links_ok=false
     if [ -d "$link_dir" ] && [ -w "$link_dir" ] 2>/dev/null; then
-        ln -sf "$SCRIPT_PATH" "${link_dir}/warp" 2>/dev/null
-        ln -sf "$SCRIPT_PATH" "${link_dir}/dexter-warp" 2>/dev/null
+        if ln -sf "$SCRIPT_PATH" "${link_dir}/warp" 2>/dev/null && \
+           ln -sf "$SCRIPT_PATH" "${link_dir}/dexter-warp" 2>/dev/null; then
+            links_ok=true
+        fi
+    fi
+
+    if [ "$was_first_install" = true ]; then
+        if [ "$links_ok" = true ]; then
+            printf "%b\n" "${GREEN}[✓] Installed. From now on just run: ${CYAN}warp${GREEN} (or ${CYAN}warp menu${GREEN}) from anywhere.${NC}"
+            log_msg "INFO" "Global command installed at $SCRIPT_PATH, linked as ${link_dir}/warp"
+        else
+            printf "%b\n" "${YELLOW}[!] Copied to $SCRIPT_PATH but could not create '${link_dir}/warp' symlink (check permissions). Run with: $SCRIPT_PATH${NC}"
+            log_msg "WARNING" "Symlink creation failed in $link_dir"
+        fi
     fi
 }
 
