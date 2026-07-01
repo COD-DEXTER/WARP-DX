@@ -594,6 +594,7 @@ check_connectivity_full() {
 }
 
 check_ipv6_available() {
+    local has_iface=false
     if [ -f /proc/net/if_inet6 ] 2>/dev/null; then
         local iface
         while IFS= read -r iface; do
@@ -603,11 +604,24 @@ check_ipv6_available() {
             if [ -f "$path" ] 2>/dev/null; then
                 local disabled
                 read -r disabled < "$path" 2>/dev/null || disabled="1"
-                [ "$disabled" = "0" ] && return 0
+                [ "$disabled" = "0" ] && has_iface=true && break
             fi
         done < /proc/net/if_inet6
     fi
-    ip -6 route show default >/dev/null 2>&1 && return 0
+    if [ "$has_iface" = false ]; then
+        ip -6 route show default >/dev/null 2>&1 && has_iface=true
+    fi
+    [ "$has_iface" = false ] && return 1
+
+    # Having a local IPv6 interface/route (e.g. a container's own
+    # link-local or NAT-internal IPv6 address) does NOT mean outbound
+    # IPv6 actually reaches the internet - very common in Docker setups
+    # where the host has no real IPv6 uplink. Confirm with a real,
+    # short-timeout connectivity probe before calling it "available",
+    # otherwise the menu advertises a mode that will just hang/fail.
+    curl -6 -s --connect-timeout 3 --max-time 5 -o /dev/null \
+        "https://[2606:4700:4700::1111]/cdn-cgi/trace" 2>/dev/null && return 0
+
     return 1
 }
 
@@ -2097,6 +2111,19 @@ dexter_warp_get_run_mode_label() {
     esac
 }
 
+# Short form used inside the boxed menu line, where the full descriptive
+# label (with its parenthetical) is too wide and pushes past the box's
+# right border. The full label above is still used in submenus and
+# confirmation messages where there's no fixed-width box to respect.
+dexter_warp_get_run_mode_short_label() {
+    case "$RUN_MODE" in
+        VPS)       echo "VPS Mode" ;;
+        Container) echo "Container Mode" ;;
+        Minimal)   echo "Minimal Mode" ;;
+        *)         echo "VPS Mode" ;;
+    esac
+}
+
 dexter_warp_apply_ip_mode_changes() {
     if dexter_warp_is_installed; then
         if [ -n "$WG_PRIV_KEY" ]; then
@@ -2152,10 +2179,16 @@ dexter_warp_switch_ip_mode() {
 
     case "$ip_choice" in
         1) IP_VERSION="4" ;;
-        2) IP_VERSION="dual" ;;
+        2)
+            if ! check_ipv6_available; then
+                printf "%b\n" "${YELLOW}[WARNING] IPv6 connectivity test failed on this system. Dual Stack will still work over IPv4, but the IPv6 leg likely won't.${NC}"
+                read -r -p "Continue with Dual Stack anyway? [y/N]: " confirm_dual
+                [[ ! "$confirm_dual" =~ ^[Yy]$ ]] && { printf "%b\n" "${YELLOW}Canceled.${NC}"; return; }
+            fi
+            IP_VERSION="dual" ;;
         3)
             if ! check_ipv6_available; then
-                printf "%b\n" "${RED}[ERROR] IPv6 is not available on this system. Cannot switch to IPv6-only mode.${NC}"
+                printf "%b\n" "${RED}[ERROR] IPv6 outbound connectivity test failed on this system (interface may exist but not actually reach the internet). Cannot switch to IPv6-only mode.${NC}"
                 return 1
             fi
             IP_VERSION="6" ;;
@@ -2427,7 +2460,13 @@ dexter_warp_draw_menu() {
             clean=$(printf '%s' "$raw" | sed 's/\x1b\[[0-9;]*[a-zA-Z]//g' 2>/dev/null)
         fi
         local vislen=${#clean}
-        local bw=73
+        # Must match the actual box border width below (59 total chars:
+        # "+" + 57 dashes + "+"), accounting for the leading "| " prefix
+        # and trailing "|" that print_line adds around every line. If this
+        # drifts out of sync with the border (e.g. after resizing the
+        # ASCII banner/box), every line silently overflows past the right
+        # edge by a constant amount, and long lines break out visibly.
+        local bw=56
         local inner=$((bw - vislen))
         [ "$inner" -lt 0 ] && inner=0
         printf "%b\n" "${CYAN}|${NC} ${raw}$(printf '%*s' "$inner" '')${CYAN}|${NC}"
@@ -2470,7 +2509,7 @@ dexter_warp_draw_menu() {
     print_line "  ${BLUE}9${NC}   View Logs"
     print_line "  ${BLUE}10${NC}  Backup / Restore Config"
     print_line "  ${BLUE}11${NC}  Reset Configurations"
-    print_line "  ${BLUE}12${NC}  Switch Run Mode  [$(dexter_warp_get_run_mode_label)]"
+    print_line "  ${BLUE}12${NC}  Switch Run Mode  [$(dexter_warp_get_run_mode_short_label)]"
     print_line "  ${BLUE}13${NC}  Switch IP Mode   [$(dexter_warp_get_mode_label)]"
     print_line "  ${BLUE}14${NC}  Check For Update"
     print_line "  ${BLUE}15${NC}  About"
