@@ -1536,7 +1536,12 @@ dexter_warp_generate_wireproxy_conf() {
     case "$IP_VERSION" in
         4)
             address_line="${ipv4}/32"
-            dns_servers="1.1.1.1"
+            # 1.1.1.1 is Cloudflare's public resolver meant to be reached
+            # FROM OUTSIDE a WARP tunnel; querying it FROM INSIDE the
+            # tunnel is known to be unreliable (silent timeouts) for some
+            # registrations. 162.159.36.1 is Cloudflare's WARP-internal
+            # DNS proxy, meant specifically for in-tunnel resolution.
+            dns_servers="162.159.36.1"
             allowed_ips="0.0.0.0/0"
             ;;
         6)
@@ -1544,7 +1549,7 @@ dexter_warp_generate_wireproxy_conf() {
                 printf "%b\n" "${YELLOW}[WARNING] IPv6 not available on this system. Falling back to IPv4.${NC}"
                 IP_VERSION="4"
                 address_line="${ipv4}/32"
-                dns_servers="1.1.1.1"
+                dns_servers="162.159.36.1"
                 allowed_ips="0.0.0.0/0"
             else
                 address_line="${ipv6}/128"
@@ -1555,11 +1560,11 @@ dexter_warp_generate_wireproxy_conf() {
         dual)
             if check_ipv6_available; then
                 address_line="${ipv4}/32, ${ipv6}/128"
-                dns_servers="1.1.1.1, 2606:4700:4700::1111"
+                dns_servers="162.159.36.1, 2606:4700:4700::1111"
                 allowed_ips="0.0.0.0/0, ::/0"
             else
                 address_line="${ipv4}/32"
-                dns_servers="1.1.1.1"
+                dns_servers="162.159.36.1"
                 allowed_ips="0.0.0.0/0"
             fi
             ;;
@@ -2470,7 +2475,7 @@ dexter_warp_draw_menu() {
     local S="${CYAN}|${NC}"
 
     printf "%b\n" "$B"
-    printf "%b\n" "${S} ${MAGENTA}██╗    ██╗ █████╗ ██████╗ ██████╗     ██████╗ ██╗  ██╗${NC}  ${S}"
+    printf "%b\n" "${S} ${MAGENTA}██╗    ██╗ █████╗ ██████╗ ██████╗      ██████╗ ██╗  ██╗${NC} ${S}"
     printf "%b\n" "${S} ${YELLOW}██║    ██║██╔══██╗██╔══██╗██╔══██╗    ██╔══██╗╚██╗██╔╝${NC}  ${S}"
     printf "%b\n" "${S} ${YELLOW}██║ █╗ ██║███████║██████╔╝██████╔╝    ██║  ██║ ╚███╔╝${NC}   ${S}"         
     printf "%b\n" "${S} ${YELLOW}██║███╗██║██╔══██║██╔══██╗██╔═══╝     ██║  ██║ ██╔██╗${NC}   ${S}" 
@@ -2586,31 +2591,55 @@ _self_install_global_command() {
     local link_dir="/usr/local/bin"
     [ "$(id -u)" -ne 0 ] 2>/dev/null && link_dir="$(dirname "$SCRIPT_PATH")"
 
+    # Only "warp-dx" is exposed as a global alias by design (the user
+    # explicitly wants exactly one entry-point command, not "warp" too).
     local links_ok=true
-    local alias_name
-    # NOTE: SCRIPT_PATH itself may already BE "${link_dir}/dexter-warp" (the
-    # default install path). Creating a symlink with that exact same path
-    # as both source and destination would overwrite the real installed
-    # file with a self-referencing symlink pointing at itself, destroying
-    # it. Skip any alias whose target path is identical to SCRIPT_PATH.
-    for alias_name in warp warp-dx dexter-warp; do
-        local link_path="${link_dir}/${alias_name}"
-        if [ "$link_path" = "$SCRIPT_PATH" ]; then
-            continue
-        fi
+    local link_path="${link_dir}/warp-dx"
+    if [ "$link_path" != "$SCRIPT_PATH" ]; then
         if [ -d "$link_dir" ] && [ -w "$link_dir" ] 2>/dev/null; then
             ln -sf "$SCRIPT_PATH" "$link_path" 2>/dev/null || links_ok=false
         else
             links_ok=false
         fi
-    done
+    fi
+
+    # A symlink existing on disk doesn't guarantee the shell can find it:
+    # some minimal/Docker base images ship a $PATH that omits
+    # /usr/local/bin entirely, which is exactly what produces "command not
+    # found" right after a reported-successful install. Detect that case
+    # and make the command reachable anyway instead of just claiming success.
+    local path_has_dir=false
+    case ":${PATH}:" in
+        *":${link_dir}:"*) path_has_dir=true ;;
+    esac
+
+    if [ "$path_has_dir" = false ] && [ "$links_ok" = true ]; then
+        local rc_file=""
+        for rc_file in "$HOME/.bashrc" "$HOME/.profile" "/etc/profile.d/warp-dx.sh"; do
+            local rc_dir
+            rc_dir=$(dirname "$rc_file")
+            [ -d "$rc_dir" ] && [ -w "$rc_dir" ] 2>/dev/null || continue
+            if [ ! -f "$rc_file" ] || ! grep -qF "$link_dir" "$rc_file" 2>/dev/null; then
+                printf '\nexport PATH="%s:$PATH"\n' "$link_dir" >> "$rc_file" 2>/dev/null
+            fi
+            break
+        done
+        export PATH="${link_dir}:${PATH}"
+        # Note: this export only affects this script's own process, not
+        # the interactive shell that launched it (a child process cannot
+        # modify its parent's environment) - so the person still needs to
+        # either open a new terminal or export PATH themselves right now.
+        printf "%b\n" "${YELLOW}[!] '$link_dir' is not in this shell's \$PATH, so 'warp-dx' won't be found here yet.${NC}"
+        printf "%b\n" "${YELLOW}    Run this once in your current terminal: ${CYAN}export PATH=\"${link_dir}:\$PATH\"${YELLOW}   (new terminals will have it automatically from now on)${NC}"
+        log_msg "WARNING" "link_dir ($link_dir) missing from caller's PATH; appended to shell rc for future sessions"
+    fi
 
     if [ "$was_first_install" = true ]; then
-        if [ "$links_ok" = true ]; then
-            printf "%b\n" "${GREEN}[✓] Installed. From now on just run: ${CYAN}warp-dx${GREEN} (or ${CYAN}warp${GREEN}) from anywhere.${NC}"
+        if [ "$links_ok" = true ] && [ "$path_has_dir" = true ]; then
+            printf "%b\n" "${GREEN}[✓] Installed. From now on just run: ${CYAN}warp-dx${GREEN} from anywhere.${NC}"
             log_msg "INFO" "Global command installed at $SCRIPT_PATH, linked as ${link_dir}/warp-dx"
-        else
-            printf "%b\n" "${YELLOW}[!] Copied to $SCRIPT_PATH but could not create alias symlinks (check permissions). Run with: $SCRIPT_PATH${NC}"
+        elif [ "$links_ok" = false ]; then
+            printf "%b\n" "${YELLOW}[!] Copied to $SCRIPT_PATH but could not create the warp-dx symlink (check permissions). Run with: $SCRIPT_PATH${NC}"
             log_msg "WARNING" "Symlink creation failed in $link_dir"
         fi
     fi
@@ -2694,7 +2723,14 @@ _reset_self_heal_state
 _self_install_global_command
 
 if ! acquire_lock; then
+    _lock_holder_pid=""
+    _lp="$(get_lock_path).pid"
+    [ -f "$_lp" ] && read -r _lock_holder_pid < "$_lp" 2>/dev/null
     printf "%b\n" "${RED}[ERROR] Another instance is already running.${NC}"
+    if [ -n "$_lock_holder_pid" ]; then
+        printf "%b\n" "${YELLOW}    Held by PID ${_lock_holder_pid}. Check with: ps -p ${_lock_holder_pid}${NC}"
+        printf "%b\n" "${YELLOW}    If that's a stuck/old session, you can force-clear it with: kill ${_lock_holder_pid} 2>/dev/null; rm -f $(get_lock_path) $(get_lock_path).pid${NC}"
+    fi
     exit 1
 fi
 
