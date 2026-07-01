@@ -2475,7 +2475,7 @@ dexter_warp_draw_menu() {
     local S="${CYAN}|${NC}"
 
     printf "%b\n" "$B"
-    printf "%b\n" "${S} ${MAGENTA}██╗    ██╗ █████╗ ██████╗ ██████╗     ██████╗ ██╗  ██╗ ${NC} ${S}"
+    printf "%b\n" "${S} ${MAGENTA}██╗    ██╗ █████╗ ██████╗ ██████╗      ██████╗ ██╗  ██╗${NC} ${S}"
     printf "%b\n" "${S} ${YELLOW}██║    ██║██╔══██╗██╔══██╗██╔══██╗    ██╔══██╗╚██╗██╔╝${NC}  ${S}"
     printf "%b\n" "${S} ${YELLOW}██║ █╗ ██║███████║██████╔╝██████╔╝    ██║  ██║ ╚███╔╝${NC}   ${S}"         
     printf "%b\n" "${S} ${YELLOW}██║███╗██║██╔══██║██╔══██╗██╔═══╝     ██║  ██║ ██╔██╗${NC}   ${S}" 
@@ -2578,25 +2578,64 @@ _self_install_global_command() {
 
     target_real=$(readlink -f "$SCRIPT_PATH" 2>/dev/null || echo "$SCRIPT_PATH")
 
-    if [ "$self_path" != "$target_real" ]; then
-        [ ! -f "$SCRIPT_PATH" ] && was_first_install=true
+    if [ ! -s "$SCRIPT_PATH" ] || [ "$self_path" != "$target_real" ]; then
+        [ ! -s "$SCRIPT_PATH" ] && was_first_install=true
         mkdir -p "$(dirname "$SCRIPT_PATH")" 2>/dev/null
-        if cp -f "$self_path" "$SCRIPT_PATH" 2>/dev/null; then
+
+        # $0 is NOT a normal, independently re-readable file when this
+        # script is launched as `bash <(curl ...)` or `curl ... | bash` -
+        # it's a process-substitution / pipe fd (e.g. /dev/fd/63). By the
+        # time we get here, bash has already consumed that stream to parse
+        # and start executing the script, so `cp` reading it again gets an
+        # empty/truncated result. `cp` still exits 0 in that case, so the
+        # old code reported success while /usr/local/bin/dexter-warp was
+        # left missing or empty and its warp-dx symlink pointed at nothing
+        # - exactly the "command not found" seen right after "[✓] Installed".
+        # Detect that case and fetch a real copy from the canonical URL
+        # instead of trying to copy an unreadable pipe.
+        local self_is_pipe=false
+        case "$self_path" in
+            /dev/fd/*|/proc/self/fd/*|/proc/*/fd/*|pipe:*|"") self_is_pipe=true ;;
+        esac
+        [ "$self_is_pipe" = false ] && [ ! -f "$self_path" ] && self_is_pipe=true
+
+        local install_ok=false
+        if [ "$self_is_pipe" = true ]; then
+            local tmp_self="/tmp/dexter-warp-self_$$.sh"
+            if http_download "https://raw.githubusercontent.com/COD-DEXTER/WARP-DX/main/main.sh" -o "$tmp_self" \
+               && [ -s "$tmp_self" ] && bash -n "$tmp_self" 2>/dev/null; then
+                mv -f "$tmp_self" "$SCRIPT_PATH" 2>/dev/null && install_ok=true
+            fi
+            rm -f "$tmp_self" 2>/dev/null
+        else
+            cp -f "$self_path" "$SCRIPT_PATH" 2>/dev/null && [ -s "$SCRIPT_PATH" ] && install_ok=true
+        fi
+
+        if [ "$install_ok" = true ]; then
             chmod +x "$SCRIPT_PATH" 2>/dev/null
         else
-            log_msg "WARNING" "Could not copy script to $SCRIPT_PATH (permission denied?)"
+            rm -f "$SCRIPT_PATH" 2>/dev/null
+            log_msg "WARNING" "Could not install a real copy to $SCRIPT_PATH (pipe-mode=${self_is_pipe}; permission/network issue?)"
         fi
     fi
 
     local link_dir="/usr/local/bin"
     [ "$(id -u)" -ne 0 ] 2>/dev/null && link_dir="$(dirname "$SCRIPT_PATH")"
 
+    # Remove a stale "warp" alias left behind by an older version of this
+    # script (only "warp-dx" is meant to exist as a global command now).
+    if [ -e "${link_dir}/warp" ] || [ -L "${link_dir}/warp" ]; then
+        rm -f "${link_dir}/warp" 2>/dev/null
+    fi
+
     # Only "warp-dx" is exposed as a global alias by design (the user
     # explicitly wants exactly one entry-point command, not "warp" too).
+    # Never point it at a file that doesn't actually exist - that's what
+    # produced the broken "command not found" symlink before.
     local links_ok=true
     local link_path="${link_dir}/warp-dx"
     if [ "$link_path" != "$SCRIPT_PATH" ]; then
-        if [ -d "$link_dir" ] && [ -w "$link_dir" ] 2>/dev/null; then
+        if [ -s "$SCRIPT_PATH" ] && [ -d "$link_dir" ] && [ -w "$link_dir" ] 2>/dev/null; then
             ln -sf "$SCRIPT_PATH" "$link_path" 2>/dev/null || links_ok=false
         else
             links_ok=false
@@ -2635,7 +2674,10 @@ _self_install_global_command() {
     fi
 
     if [ "$was_first_install" = true ]; then
-        if [ "$links_ok" = true ] && [ "$path_has_dir" = true ]; then
+        if [ ! -s "$SCRIPT_PATH" ]; then
+            printf "%b\n" "${RED}[ERROR] Could not install to $SCRIPT_PATH (no internet, or a permission issue). 'warp-dx' will not work yet - fix the underlying error above and re-run.${NC}"
+            log_msg "ERROR" "Install failed: $SCRIPT_PATH was never created"
+        elif [ "$links_ok" = true ] && [ "$path_has_dir" = true ]; then
             printf "%b\n" "${GREEN}[✓] Installed. From now on just run: ${CYAN}warp-dx${GREEN} from anywhere.${NC}"
             log_msg "INFO" "Global command installed at $SCRIPT_PATH, linked as ${link_dir}/warp-dx"
         elif [ "$links_ok" = false ]; then
