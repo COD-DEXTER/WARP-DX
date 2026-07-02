@@ -2302,26 +2302,45 @@ dexter_warp_change_ip_by_country() {
 }
 
 # ==========================================
-# Section 21d: Optimize Connection (Best PoP by latency)
+# Section 21d: Optimize Connection (Best PoP by score)
 # ==========================================
 # WARP isn't designed to be a "pick your country" VPN - what actually
 # determines quality is which Cloudflare PoP/colo you land on relative to
 # the server's own location, not the country label. A DE server exiting
 # through AMS can be excellent; the same server exiting through a distant
 # PoP under a "matching-sounding" country can be much worse. This tests
-# every known-healthy endpoint ONCE (not up to 50 retries like the country
-# search), records its colo and connect latency via a single cdn-cgi/trace
-# request each, and switches to whichever scored best - fast, deterministic,
-# and repeatable, rather than a lottery.
+# every known-healthy endpoint ONCE per run (not up to 50 retries like the
+# country search) and scores each on three independent signals instead of
+# a single latency number:
+#   - setup_ms  : time from launching wireproxy with this endpoint until
+#                 the SOCKS5 port is actually listening (process start +
+#                 WireGuard handshake + readiness - a real "how long until
+#                 usable" number, distinct from steady-state RTT)
+#   - avg_ms    : average of 3 cdn-cgi/trace round-trips once connected
+#   - jitter_ms : (max-min) spread across those 3 samples, as a cheap
+#                 stability signal - a fast-but-erratic endpoint (e.g. one
+#                 sample fine, next one a big spike) is worse in practice
+#                 than a slightly slower but consistent one, even though a
+#                 single-sample latency check would never show that.
 #
-# Deliberately NOT included in this first version: real throughput/Mbps
-# testing. Measuring actual download speed per endpoint means pulling a
-# real multi-MB file from each of them, which is slow, burns bandwidth on
-# every run, and is noisy (varies minute to minute) - not worth the cost
-# for a "which PoP is closest" check. Latency + colo is enough signal for
-# picking a sane default; a deeper throughput-based mode can be added
-# later if it turns out to matter in practice.
+# SCORING: score = 1000 - avg_ms - (jitter_ms * 3) - (setup_ms / 5)
+# Higher is better. The exact weights (jitter weighted 3x, setup divided
+# by 5) are a reasonable heuristic, not a scientifically tuned formula -
+# they're deliberately kept as plain named constants below so they're easy
+# to retune later if real-world results suggest different weighting.
+#
+# Deliberately NOT included: real throughput/Mbps testing. Measuring
+# actual download speed per endpoint means pulling a real multi-MB file
+# from each of them, which is slow, burns bandwidth on every run, and is
+# noisy (varies minute to minute) - not worth the cost for a "which PoP is
+# best" check. A deeper throughput-based mode can be added later if this
+# heuristic turns out to be insufficient in practice.
+_OPT_JITTER_WEIGHT=3
+_OPT_SETUP_DIVISOR=5
+
 dexter_warp_optimize_connection() {
+    local non_interactive="${1:-}"
+
     if ! dexter_warp_is_installed; then
         printf "%b\n" "${RED}WARP is not installed.${NC}"
         return 1
@@ -2344,13 +2363,13 @@ dexter_warp_optimize_connection() {
     done <<< "$healthy_eps"
     [ ${#endpoints_array[@]} -eq 0 ] && endpoints_array=("${WARP_ENDPOINTS[@]}")
 
-    printf "%b\n" "${CYAN}Testing ${#endpoints_array[@]} endpoints...${NC}"
+    printf "%b\n" "${CYAN}Testing ${#endpoints_array[@]} endpoints (3 samples each)...${NC}"
 
-    local -a result_ep=() result_colo=() result_ms=()
+    local -a result_ep=() result_colo=() result_country=() result_avg=() result_jitter=() result_setup=() result_score=()
     local idx=0
     local total=${#endpoints_array[@]}
 
-    _live_block_start
+    [ "$non_interactive" != "quiet" ] && _live_block_start
     local ep
     for ep in "${endpoints_array[@]}"; do
         idx=$((idx + 1))
@@ -2362,47 +2381,82 @@ dexter_warp_optimize_connection() {
         WG_PEER_ENDPOINT="$validated_ep"
         save_config
         dexter_warp_generate_wireproxy_conf "$WG_IPV4" "$WG_PRIV_KEY" "$WG_PEER_PUB_KEY" "$WG_PEER_ENDPOINT" "$WG_IPV6"
+
+        local t_setup_start t_setup_end setup_ms
+        t_setup_start=$(date +%s%N)
         _service_start
         wait_for_port "$SOCKS5_PORT" 8 0.5
+        t_setup_end=$(date +%s%N)
+        setup_ms=$(( (t_setup_end - t_setup_start) / 1000000 ))
 
-        _live_block_update \
+        [ "$non_interactive" != "quiet" ] && _live_block_update \
             "${CYAN}Optimizing WARP exit...${NC}" \
             "Testing  : ${idx}/${total} (${validated_ep})" \
-            "Colo     : ..." \
-            "Latency  : ..."
+            "Setup    : ${setup_ms}ms" \
+            "Sampling : 0/3"
 
-        local t_start t_end ms trace colo ip
-        t_start=$(date +%s%N)
-        trace=$(HTTP_CONNECT_TIMEOUT=4 HTTP_MAX_TIME=8 HTTP_RETRY=0 \
-            http_get "https://www.cloudflare.com/cdn-cgi/trace" --socks5-hostname "${PROXY_IP}:${SOCKS5_PORT}" 2>/dev/null)
-        t_end=$(date +%s%N)
+        # 3 real round-trips through the now-connected tunnel, each one
+        # also gives colo/country (kept from the last successful sample).
+        local -a samples=()
+        local colo="" country="" sample_idx
+        for sample_idx in 1 2 3; do
+            local t_start t_end trace ms
+            t_start=$(date +%s%N)
+            trace=$(HTTP_CONNECT_TIMEOUT=4 HTTP_MAX_TIME=8 HTTP_RETRY=0 \
+                http_get "https://www.cloudflare.com/cdn-cgi/trace" --socks5-hostname "${PROXY_IP}:${SOCKS5_PORT}" 2>/dev/null)
+            t_end=$(date +%s%N)
+            if [ -n "$trace" ]; then
+                ms=$(( (t_end - t_start) / 1000000 ))
+                samples+=("$ms")
+                while IFS='=' read -r k v; do
+                    v="${v%$'\r'}"
+                    [ "$k" = "colo" ] && colo="$v"
+                    [ "$k" = "loc" ] && country="$v"
+                done <<< "$trace"
+                [ "$non_interactive" != "quiet" ] && _live_block_update \
+                    "${CYAN}Optimizing WARP exit...${NC}" \
+                    "Testing  : ${idx}/${total} (${validated_ep})" \
+                    "Setup    : ${setup_ms}ms  |  Colo: ${colo:-??}  Country: ${country:-??}" \
+                    "Sampling : ${sample_idx}/3 (${ms}ms)"
+            fi
+        done
 
-        if [ -n "$trace" ]; then
-            ms=$(( (t_end - t_start) / 1000000 ))
-            colo=""
-            while IFS='=' read -r k v; do
-                v="${v%$'\r'}"
-                [ "$k" = "colo" ] && colo="$v"
-                [ "$k" = "ip" ] && ip="$v"
-            done <<< "$trace"
-            result_ep+=("$validated_ep")
-            result_colo+=("${colo:-??}")
-            result_ms+=("$ms")
-            _live_block_update \
+        if [ ${#samples[@]} -eq 0 ]; then
+            [ "$non_interactive" != "quiet" ] && _live_block_update \
                 "${CYAN}Optimizing WARP exit...${NC}" \
                 "Testing  : ${idx}/${total} (${validated_ep})" \
-                "Colo     : ${colo:-??}" \
-                "Latency  : ${ms}ms"
-        else
-            _live_block_update \
-                "${CYAN}Optimizing WARP exit...${NC}" \
-                "Testing  : ${idx}/${total} (${validated_ep})" \
-                "Colo     : unreachable" \
-                "Latency  : -"
+                "Result   : unreachable" \
+                "Sampling : 0/3"
+            sleep 0.2
+            continue
         fi
-        sleep 0.3
+
+        local sum=0 min="${samples[0]}" max="${samples[0]}" s
+        for s in "${samples[@]}"; do
+            sum=$((sum + s))
+            [ "$s" -lt "$min" ] && min="$s"
+            [ "$s" -gt "$max" ] && max="$s"
+        done
+        local avg_ms=$((sum / ${#samples[@]}))
+        local jitter_ms=$((max - min))
+        local score=$(( 1000 - avg_ms - (jitter_ms * _OPT_JITTER_WEIGHT) - (setup_ms / _OPT_SETUP_DIVISOR) ))
+
+        result_ep+=("$validated_ep")
+        result_colo+=("${colo:-??}")
+        result_country+=("${country:-??}")
+        result_avg+=("$avg_ms")
+        result_jitter+=("$jitter_ms")
+        result_setup+=("$setup_ms")
+        result_score+=("$score")
+
+        [ "$non_interactive" != "quiet" ] && _live_block_update \
+            "${CYAN}Optimizing WARP exit...${NC}" \
+            "Testing  : ${idx}/${total} (${validated_ep})" \
+            "Result   : ${colo:-??} / ${country:-??}  avg=${avg_ms}ms  jitter=${jitter_ms}ms" \
+            "Setup    : ${setup_ms}ms"
+        sleep 0.2
     done
-    _live_block_end
+    [ "$non_interactive" != "quiet" ] && _live_block_end
 
     if [ ${#result_ep[@]} -eq 0 ]; then
         printf "%b\n" "${RED}No endpoint responded. Restoring previous configuration.${NC}"
@@ -2417,26 +2471,28 @@ dexter_warp_optimize_connection() {
         return 1
     fi
 
-    # Rank by latency ascending, print a small results table.
+    # Rank by score descending (higher = better).
     printf "%b\n" ""
-    printf "%b\n" "${CYAN}Results (fastest first):${NC}"
+    printf "%b\n" "${CYAN}Results (best score first):${NC}"
     local -a order
-    order=($(for i in "${!result_ms[@]}"; do printf '%s\t%s\n' "${result_ms[$i]}" "$i"; done | sort -n | cut -f2))
+    order=($(for i in "${!result_score[@]}"; do printf '%s\t%s\n' "${result_score[$i]}" "$i"; done | sort -rn | cut -f2))
     local rank=1
     local best_idx="${order[0]}"
     for i in "${order[@]}"; do
         local mark=" "
         [ "$rank" -eq 1 ] && mark="★"
-        printf "%b\n" "  ${mark} ${result_colo[$i]}  ${result_ms[$i]}ms  (${result_ep[$i]})"
+        printf "%b\n" "  ${mark} ${result_colo[$i]} (${result_country[$i]})  avg=${result_avg[$i]}ms  jitter=${result_jitter[$i]}ms  setup=${result_setup[$i]}ms  score=${result_score[$i]}  (${result_ep[$i]})"
         rank=$((rank + 1))
     done
 
     local best_ep="${result_ep[$best_idx]}"
     local best_colo="${result_colo[$best_idx]}"
-    local best_ms="${result_ms[$best_idx]}"
+    local best_country="${result_country[$best_idx]}"
+    local best_avg="${result_avg[$best_idx]}"
+    local best_score="${result_score[$best_idx]}"
 
     printf "%b\n" ""
-    printf "%b\n" "${GREEN}Best Exit: ${best_colo} (${best_ms}ms) - applying...${NC}"
+    printf "%b\n" "${GREEN}Best Exit: ${best_colo} (${best_country}), avg ${best_avg}ms, score ${best_score} - applying...${NC}"
 
     dexter_warp_disconnect
     WG_PEER_ENDPOINT="$best_ep"
@@ -2448,8 +2504,12 @@ dexter_warp_optimize_connection() {
     local final_ip
     final_ip=$(dexter_warp_get_out_ip)
     [ -n "$final_ip" ] && write_cache "$final_ip"
-    printf "%b\n" "${GREEN}✔ Applied. Exit: ${best_colo}, IP: ${final_ip:-N/A}${NC}"
-    log_msg "INFO" "Optimize connection: selected $best_ep (colo=$best_colo, ${best_ms}ms) out of ${#result_ep[@]} tested"
+    printf "%b\n" ""
+    printf "%b\n" "Exit PoP : ${best_colo}"
+    printf "%b\n" "Country  : ${best_country}"
+    printf "%b\n" "IP       : ${final_ip:-N/A}"
+    printf "%b\n" "${GREEN}✔ Applied.${NC}"
+    log_msg "INFO" "Optimize connection: selected $best_ep (colo=$best_colo, country=$best_country, avg=${best_avg}ms, score=$best_score) out of ${#result_ep[@]} tested"
     rm -f "$lkg_conf_backup" 2>/dev/null
     return 0
 }
@@ -3139,6 +3199,7 @@ _print_cli_help() {
     printf "  %-22s %s\n" "warp status" "Show current connection status"
     printf "  %-22s %s\n" "warp install" "Run the full install flow"
     printf "  %-22s %s\n" "warp newip" "Rotate to a new WARP identity"
+    printf "  %-22s %s\n" "warp optimize [--quiet]" "Test endpoints and switch to the best-scoring one (cron-friendly with --quiet)"
     printf "  %-22s %s\n" "warp logs" "View recent logs"
     printf "  %-22s %s\n" "warp version" "Print the script version"
 }
@@ -3173,6 +3234,20 @@ _dexter_warp_cli_dispatch() {
             ;;
         newip|new-identity)
             dexter_warp_new_identity
+            exit $?
+            ;;
+        optimize)
+            # Non-interactive, cron-friendly. This is the practical version
+            # of "auto optimize every N hours": no built-in scheduler here
+            # (that needs its own careful design around not disrupting an
+            # active connection) - instead this subcommand does the actual
+            # work and can be dropped straight into the user's own crontab,
+            # e.g.: 0 */12 * * * /usr/local/bin/dexter-warp optimize --quiet
+            if [ "${2:-}" = "--quiet" ] || [ "${2:-}" = "-q" ]; then
+                dexter_warp_optimize_connection quiet >>"$(get_log_path)" 2>&1
+            else
+                dexter_warp_optimize_connection
+            fi
             exit $?
             ;;
         logs)
