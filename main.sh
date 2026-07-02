@@ -1339,6 +1339,15 @@ _service_start() {
 
     local wireproxy_err_log
     wireproxy_err_log="${CACHE_DIR}/wireproxy-last-error.log"
+    # CACHE_DIR can be deleted mid-session by "Remove WARP" (option 4),
+    # which does "rm -rf" on this exact directory. _ensure_dirs only runs
+    # once at script startup, so a remove-then-reinstall within the same
+    # menu session left this directory missing -- writing here then
+    # failed silently, which made wireproxy's own stdout/stderr redirect
+    # target invalid, causing it to die immediately on launch with no
+    # captured output. Recreate defensively every time instead of
+    # assuming it still exists.
+    mkdir -p "$CACHE_DIR" 2>/dev/null || true
     : > "$wireproxy_err_log" 2>/dev/null
 
     nohup "$WIREPROXY_BIN" -c "$WIREPROXY_CONF" >"$wireproxy_err_log" 2>&1 &
