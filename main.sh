@@ -58,6 +58,7 @@ NC='\033[0m'
 
 LAST_IP_CHECK=0
 CACHED_IP=""
+CACHED_COUNTRY=""
 IP_CACHE_TTL=300
 
 SELF_HEAL_BACKOFF=0
@@ -1020,23 +1021,26 @@ dexter_warp_is_connected() {
 # ==========================================
 write_cache() {
     local ip="$1"
+    local country="${2:-}"
     [ -z "$ip" ] && return
     mkdir -p "$(dirname "$CACHE_FILE")" 2>/dev/null || true
-    printf '%s\n%s\n' "$ip" "$(date +%s)" > "$CACHE_FILE" 2>/dev/null
+    printf '%s\n%s\n%s\n' "$ip" "$(date +%s)" "$country" > "$CACHE_FILE" 2>/dev/null
     CACHED_IP="$ip"
+    CACHED_COUNTRY="$country"
     LAST_IP_CHECK=$(date +%s)
 }
 
 read_cache() {
     if [ -f "$CACHE_FILE" ]; then
-        local cached_ip="" cached_time=""
-        read -r cached_ip cached_time < "$CACHE_FILE" 2>/dev/null || { cached_ip=""; cached_time=""; }
+        local cached_ip="" cached_time="" cached_country=""
+        { read -r cached_ip; read -r cached_time; read -r cached_country; } < "$CACHE_FILE" 2>/dev/null
         if [ -n "$cached_ip" ] && [[ "$cached_time" =~ ^[0-9]+$ ]]; then
             local now
             now=$(date +%s)
             local age=$((now - cached_time))
             if [ "$age" -lt "$IP_CACHE_TTL" ] 2>/dev/null; then
                 CACHED_IP="$cached_ip"
+                CACHED_COUNTRY="$cached_country"
                 LAST_IP_CHECK="$cached_time"
                 echo "$cached_ip"
                 return 0
@@ -1049,6 +1053,7 @@ read_cache() {
 invalidate_cache() {
     rm -f "$(get_cache_path)" 2>/dev/null
     CACHED_IP=""
+    CACHED_COUNTRY=""
 }
 
 # ==========================================
@@ -1102,6 +1107,32 @@ dexter_warp_get_out_ip_cached() {
         echo "$ip"
         return 0
     fi
+    return 1
+}
+
+dexter_warp_get_out_ip_and_country_cached() {
+    # Same caching behavior as dexter_warp_get_out_ip_cached, but also
+    # returns the exit country (from cdn-cgi/trace's loc= field) so the
+    # status/menu display can show "which country am I in" without an
+    # extra request on every redraw. Prints "IP|COUNTRY".
+    if ! dexter_warp_is_connected; then
+        echo "N/A|"
+        return 0
+    fi
+    local cached
+    cached=$(read_cache)
+    if [ -n "$cached" ]; then
+        printf '%s|%s\n' "$cached" "$CACHED_COUNTRY"
+        return 0
+    fi
+    local result
+    result=$(dexter_warp_get_ip_and_country)
+    if [ -n "$result" ]; then
+        write_cache "${result%%|*}" "${result##*|}"
+        printf '%s\n' "$result"
+        return 0
+    fi
+    echo "N/A|"
     return 1
 }
 
@@ -1892,6 +1923,12 @@ dexter_warp_disconnect() {
 dexter_warp_status() {
     if dexter_warp_is_connected; then
         printf "%b\n" "WARP Status: ${GREEN}CONNECTED${NC} (via WireProxy SOCKS5: ${PROXY_IP}:${SOCKS5_PORT})"
+        local ip_country
+        ip_country=$(dexter_warp_get_out_ip_and_country_cached 2>/dev/null)
+        local out_ip="${ip_country%%|*}"
+        local out_country="${ip_country##*|}"
+        printf "%b\n" "Exit IP     : ${YELLOW}${out_ip:-N/A}${NC}"
+        printf "%b\n" "Exit Country: ${YELLOW}${out_country:-Unknown}${NC}"
     else
         printf "%b\n" "WARP Status: ${RED}NOT CONNECTED${NC}"
     fi
@@ -2289,11 +2326,35 @@ dexter_warp_change_ip_by_country() {
             "Elapsed  : $(fmt_mmss "$elapsed")"
 
         if [ -n "$last_country" ] && [ "$last_country" = "$target" ]; then
-            found=true
-            final_ip="$last_ip"
-            final_country="$last_country"
-            final_endpoint="$validated_ep"
-            break
+            # Don't trust a single reading right after the port opens --
+            # the SOCKS5 port can start accepting connections slightly
+            # before the WireGuard handshake to the new peer has fully
+            # settled, so the very first trace request can occasionally
+            # still ride on leftover/incomplete routing state and report
+            # something that doesn't match what the connection actually
+            # settles on a moment later. Wait briefly, force a fresh
+            # (non-cached) re-check, and only declare success if the
+            # second reading still agrees.
+            invalidate_cache
+            sleep 1.5
+            local recheck recheck_ip recheck_country
+            recheck=$(dexter_warp_get_ip_and_country)
+            recheck_ip="${recheck%%|*}"
+            recheck_country="${recheck##*|}"
+            if [ -n "$recheck_country" ] && [ "$recheck_country" = "$target" ]; then
+                found=true
+                final_ip="${recheck_ip:-$last_ip}"
+                final_country="$recheck_country"
+                final_endpoint="$validated_ep"
+                break
+            else
+                _live_block_update \
+                    "${CYAN}Searching for: ${target}${NC}" \
+                    "Attempt  : ${attempt}/${max_attempts}" \
+                    "Current  : ${last_country} -> unstable, re-checked as ${recheck_country:-??}, retrying" \
+                    "IP       : ${recheck_ip:-N/A}" \
+                    "Elapsed  : $(fmt_mmss "$elapsed")"
+            fi
         fi
     done
     _live_block_end
@@ -2308,7 +2369,7 @@ dexter_warp_change_ip_by_country() {
         printf "%b\n" "Attempts : ${attempt}"
         printf "%b\n" "Time     : ${total_elapsed}s"
         printf "%b\n" "Endpoint : ${final_endpoint}"
-        write_cache "$final_ip"
+        write_cache "$final_ip" "$final_country"
         log_msg "INFO" "Change IP by country success: $target reached at $final_ip via $final_endpoint after $attempt attempts"
         rm -f "$lkg_conf_backup" 2>/dev/null
         return 0
@@ -2582,7 +2643,7 @@ dexter_warp_optimize_connection() {
 
     local final_ip
     final_ip=$(dexter_warp_get_out_ip)
-    [ -n "$final_ip" ] && write_cache "$final_ip"
+    [ -n "$final_ip" ] && write_cache "$final_ip" "$best_country"
     printf "%b\n" ""
     printf "%b\n" "Exit PoP : ${best_colo}"
     printf "%b\n" "Country  : ${best_country}"
@@ -2597,6 +2658,172 @@ dexter_warp_optimize_connection() {
 # (previously the standalone "New Identity" menu item) and the new
 # optimizer stay reachable without cluttering the main menu with several
 # confusingly-similar "change IP" options.
+# ==========================================
+# Section 21e: Optimize to a different country (retry-based)
+# ==========================================
+# The plain optimizer tests each of the ~7 known endpoints exactly once,
+# which is fast but has a real limitation: these are Cloudflare anycast
+# IPs, and the same fixed IP does not always land on the same physical
+# PoP/colo on every connection attempt (anycast routing can shift with
+# network conditions, load, or just time). One deterministic pass can
+# easily land on the current country repeatedly for several of the 7
+# endpoints and never discover the variance available from re-trying the
+# same IPs. This function instead retries (drawing endpoints at random,
+# repeats allowed) up to a fixed attempt/time budget specifically hunting
+# for ANY exit whose country differs from wherever we started, collecting
+# a small pool of genuinely-different candidates and picking the fastest
+# of those rather than stopping at the very first different one found.
+dexter_warp_optimize_different_country() {
+    if ! dexter_warp_is_installed; then
+        printf "%b\n" "${RED}WARP is not installed.${NC}"
+        return 1
+    fi
+    if ! check_internet; then
+        printf "%b\n" "${RED}No internet connection.${NC}"
+        return 1
+    fi
+
+    local current_country=""
+    if dexter_warp_is_connected; then
+        local current_check
+        current_check=$(dexter_warp_get_ip_and_country)
+        [ -n "$current_check" ] && current_country="${current_check##*|}"
+    fi
+
+    local lkg_endpoint="$WG_PEER_ENDPOINT"
+    local lkg_conf_backup
+    lkg_conf_backup=$(mktemp 2>/dev/null) || lkg_conf_backup="${WIREPROXY_CONF}.lkg.$$"
+    cp -f "$WIREPROXY_CONF" "$lkg_conf_backup" 2>/dev/null
+
+    local max_attempts=30
+    local max_seconds=240
+    # Stop early once this many genuinely-different candidates are found,
+    # rather than always burning the full 30 attempts once we already have
+    # enough to pick a good one from.
+    local candidate_goal=4
+
+    printf "%b\n" "${CYAN}Searching up to ${max_attempts} attempts for an exit outside ${current_country:-your current country}...${NC}"
+
+    local -a cand_ep=() cand_ip=() cand_country=() cand_colo=() cand_ms=()
+    local start_ts attempt=0
+    start_ts=$(date +%s)
+
+    _live_block_start
+    while [ "$attempt" -lt "$max_attempts" ] && [ "${#cand_ep[@]}" -lt "$candidate_goal" ]; do
+        local now_ts elapsed
+        now_ts=$(date +%s)
+        elapsed=$((now_ts - start_ts))
+        [ "$elapsed" -ge "$max_seconds" ] && break
+        attempt=$((attempt + 1))
+
+        local rand_val rand_idx selected_endpoint validated_ep
+        rand_val=$(get_random)
+        rand_idx=$((rand_val % ${#WARP_ENDPOINTS[@]}))
+        selected_endpoint="${WARP_ENDPOINTS[$rand_idx]}"
+        validated_ep=$(validate_endpoint "$selected_endpoint")
+        [ -z "$validated_ep" ] && continue
+
+        dexter_warp_disconnect
+        WG_PEER_ENDPOINT="$validated_ep"
+        save_config
+        dexter_warp_generate_wireproxy_conf "$WG_IPV4" "$WG_PRIV_KEY" "$WG_PEER_PUB_KEY" "$WG_PEER_ENDPOINT" "$WG_IPV6"
+        _service_start
+        wait_for_port "$SOCKS5_PORT" 8 0.5
+
+        local t_start t_end trace ms colo="" country=""
+        t_start=$(date +%s%N)
+        trace=$(HTTP_CONNECT_TIMEOUT=4 HTTP_MAX_TIME=8 HTTP_RETRY=0 \
+            http_get "https://www.cloudflare.com/cdn-cgi/trace" --socks5-hostname "${PROXY_IP}:${SOCKS5_PORT}" 2>/dev/null)
+        t_end=$(date +%s%N)
+        local ip=""
+        if [ -n "$trace" ]; then
+            ms=$(( (t_end - t_start) / 1000000 ))
+            while IFS='=' read -r k v; do
+                v="${v%$'\r'}"
+                case "$k" in
+                    colo) colo="$v" ;;
+                    loc) country="$v" ;;
+                    ip) ip="$v" ;;
+                esac
+            done <<< "$trace"
+        fi
+
+        _live_block_update \
+            "${CYAN}Searching for a different exit...${NC}" \
+            "Attempt    : ${attempt}/${max_attempts}" \
+            "Candidates : ${#cand_ep[@]}/${candidate_goal}" \
+            "Last try   : ${colo:-??} / ${country:-??}  ${ms:-?}ms" \
+            "Elapsed    : $(fmt_mmss "$elapsed")"
+
+        if [ -n "$country" ] && [ "$country" != "$current_country" ] && [ -n "$ip" ]; then
+            cand_ep+=("$validated_ep")
+            cand_ip+=("$ip")
+            cand_country+=("$country")
+            cand_colo+=("${colo:-??}")
+            cand_ms+=("$ms")
+        fi
+    done
+    _live_block_end
+
+    if [ "${#cand_ep[@]}" -eq 0 ]; then
+        printf "%b\n" "${YELLOW}✗ Never landed outside ${current_country:-the current country} after ${attempt} attempts. Restoring previous configuration.${NC}"
+        WG_PEER_ENDPOINT="$lkg_endpoint"
+        save_config
+        dexter_warp_disconnect
+        [ -s "$lkg_conf_backup" ] && cp -f "$lkg_conf_backup" "$WIREPROXY_CONF" 2>/dev/null
+        chmod 600 "$WIREPROXY_CONF" 2>/dev/null
+        _service_start
+        wait_for_port "$SOCKS5_PORT" 10 0.5
+        rm -f "$lkg_conf_backup" 2>/dev/null
+        return 1
+    fi
+
+    # Pick the fastest candidate among the different-country pool found.
+    local best_i=0 i
+    for i in "${!cand_ms[@]}"; do
+        [ "${cand_ms[$i]}" -lt "${cand_ms[$best_i]}" ] && best_i="$i"
+    done
+
+    # Re-confirm before committing, same reasoning as the by-country
+    # search: don't trust a single reading, make sure it's stable.
+    WG_PEER_ENDPOINT="${cand_ep[$best_i]}"
+    save_config
+    dexter_warp_generate_wireproxy_conf "$WG_IPV4" "$WG_PRIV_KEY" "$WG_PEER_PUB_KEY" "$WG_PEER_ENDPOINT" "$WG_IPV6"
+    dexter_warp_disconnect
+    _service_start
+    wait_for_port "$SOCKS5_PORT" 8 0.5
+    invalidate_cache
+    sleep 1.5
+    local recheck recheck_ip recheck_country
+    recheck=$(dexter_warp_get_ip_and_country)
+    recheck_ip="${recheck%%|*}"
+    recheck_country="${recheck##*|}"
+
+    if [ -z "$recheck_country" ] || [ "$recheck_country" = "$current_country" ]; then
+        printf "%b\n" "${YELLOW}Selection was unstable on re-check. Restoring previous configuration.${NC}"
+        WG_PEER_ENDPOINT="$lkg_endpoint"
+        save_config
+        dexter_warp_disconnect
+        [ -s "$lkg_conf_backup" ] && cp -f "$lkg_conf_backup" "$WIREPROXY_CONF" 2>/dev/null
+        chmod 600 "$WIREPROXY_CONF" 2>/dev/null
+        _service_start
+        wait_for_port "$SOCKS5_PORT" 10 0.5
+        rm -f "$lkg_conf_backup" 2>/dev/null
+        return 1
+    fi
+
+    printf "%b\n" ""
+    printf "%b\n" "${GREEN}✔ Found a different exit${NC}"
+    printf "%b\n" "From     : ${current_country:-Unknown}"
+    printf "%b\n" "To       : ${GREEN}${recheck_country}${NC} (colo ${cand_colo[$best_i]})"
+    printf "%b\n" "IP       : ${GREEN}${recheck_ip}${NC}"
+    printf "%b\n" "Attempts : ${attempt}  (from ${#cand_ep[@]} different-country candidates found)"
+    write_cache "$recheck_ip" "$recheck_country"
+    log_msg "INFO" "Optimize-different: moved from ${current_country:-?} to ${recheck_country} at ${recheck_ip} via ${cand_ep[$best_i]}"
+    rm -f "$lkg_conf_backup" 2>/dev/null
+    return 0
+}
+
 dexter_warp_change_ip_menu() {
     printf "%b\n" "${CYAN}--- Change IP ---${NC}"
     printf "%b\n" "  1) Optimize (Best Latency/PoP) - recommended"
@@ -2606,7 +2833,7 @@ dexter_warp_change_ip_menu() {
     local choice
     read -r -p "Choose option: " choice
     case "$choice" in
-        1) dexter_warp_optimize_connection "" "different" ;;
+        1) dexter_warp_optimize_different_country ;;
         2) dexter_warp_change_ip_by_country ;;
         3) dexter_warp_new_identity ;;
         *) printf "%b\n" "${YELLOW}Canceled.${NC}" ;;
@@ -3028,8 +3255,14 @@ dexter_warp_draw_menu() {
     local is_connected="no"
     dexter_warp_is_connected && is_connected="yes"
     local socks5_ip="N/A"
+    local socks5_country="Unknown"
     if [ "$is_connected" = "yes" ]; then
-        socks5_ip=$(dexter_warp_get_out_ip_cached 2>/dev/null || echo "N/A")
+        local ip_country
+        ip_country=$(dexter_warp_get_out_ip_and_country_cached 2>/dev/null)
+        socks5_ip="${ip_country%%|*}"
+        socks5_country="${ip_country##*|}"
+        [ -z "$socks5_ip" ] && socks5_ip="N/A"
+        [ -z "$socks5_country" ] && socks5_country="Unknown"
     fi
 
     print_line() {
@@ -3071,6 +3304,7 @@ dexter_warp_draw_menu() {
         print_line "WARP Status:   ${GREEN}CONNECTED${NC}"
         print_line "Proxy:         ${CYAN}${PROXY_IP}:${SOCKS5_PORT}${NC}"
         print_line "Out IP:        ${YELLOW}${socks5_ip}${NC}"
+        print_line "Country:       ${YELLOW}${socks5_country}${NC}"
     else
         print_line "WARP Status:   ${RED}NOT CONNECTED${NC}"
     fi
