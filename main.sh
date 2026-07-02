@@ -528,7 +528,24 @@ safe_cleanup() {
         done
     fi
 }
-trap safe_cleanup EXIT INT TERM HUP
+trap safe_cleanup EXIT
+# NOTE: trapping INT/TERM/HUP with just "safe_cleanup" (no exit) replaces
+# the shell's default disposition for these signals, which is to
+# terminate the process. Without an explicit exit after cleanup, the
+# script would just run safe_cleanup and then KEEP RUNNING -- e.g. an SSH
+# disconnect (SIGHUP) would leave an orphaned, terminal-less copy of this
+# script alive in the background forever, still holding the flock lock fd
+# open. That orphan is real and alive (not a stale/dead PID), so the
+# stale-lock auto-recovery in acquire_lock correctly refuses to clear it,
+# and every future launch fails with "Another instance is already
+# running" pointing at that immortal orphan's PID until something else
+# happens to kill it. Explicitly exiting with the conventional
+# 128+signal code after cleanup ensures the process actually terminates,
+# which releases the lock fd immediately and lets the next launch proceed
+# normally.
+trap 'safe_cleanup; exit 130' INT
+trap 'safe_cleanup; exit 143' TERM
+trap 'safe_cleanup; exit 129' HUP
 
 # ==========================================
 # Section 6: Logger
