@@ -2048,19 +2048,16 @@ dexter_warp_quick_change_ip() {
     old_ip=$(dexter_warp_get_out_ip)
     printf "%b\n" "Current IP: ${YELLOW}${old_ip:-N/A}${NC}"
 
-    printf "%b\n" "${CYAN}Checking endpoint health...${NC}"
-    local healthy_eps
-    healthy_eps=$(get_healthy_endpoints)
-    local -a endpoints_array=()
-    while IFS= read -r ep; do
-        [ -n "$ep" ] && endpoints_array+=("$ep")
-    done <<< "$healthy_eps"
-
-    if [ ${#endpoints_array[@]} -eq 0 ]; then
-        endpoints_array=("${WARP_ENDPOINTS[@]}")
-    fi
-
-    printf "%b\n" "Available healthy endpoints: ${GREEN}${#endpoints_array[@]}${NC}"
+    # NOTE: this used to pre-filter via get_healthy_endpoints(), which
+    # probes with a TCP connect ("nc -z"). WARP/WireGuard endpoints only
+    # ever answer on UDP, so a TCP probe against them is testing the wrong
+    # protocol and produces unreliable results (often "finding" only 1
+    # healthy endpoint out of 7 for reasons unrelated to real reachability
+    # - see the fix applied to Optimize/By Country for the full story).
+    # The actual connect+IP-check loop below is already the real test, so
+    # just use the full endpoint list directly instead of a broken filter.
+    local -a endpoints_array=("${WARP_ENDPOINTS[@]}")
+    printf "%b\n" "Available endpoints: ${GREEN}${#endpoints_array[@]}${NC}"
 
     local attempt
     for attempt in {1..5}; do
@@ -3315,10 +3312,8 @@ dexter_warp_draw_menu() {
     printf "%b\n" "$B"
 
     if [ "$is_connected" = "yes" ]; then
-        print_line "WARP Status:   ${GREEN}CONNECTED${NC}"
-        print_line "Proxy:         ${CYAN}${PROXY_IP}:${SOCKS5_PORT}${NC}"
-        print_line "Out IP:        ${YELLOW}${socks5_ip}${NC}"
-        print_line "Country:       ${YELLOW}${socks5_country}${NC}"
+        print_line "WARP Status:   ${GREEN}CONNECTED${NC}      Out IP:  ${YELLOW}${socks5_ip}${NC}"
+        print_line "Proxy:         ${CYAN}${PROXY_IP}:${SOCKS5_PORT}${NC}    Country: ${YELLOW}${socks5_country}${NC}"
     else
         print_line "WARP Status:   ${RED}NOT CONNECTED${NC}"
     fi
