@@ -1074,9 +1074,14 @@ dexter_warp_get_out_ip() {
             ip="${ip%% *}"
         fi
     fi
-    if [ -z "$ip" ]; then
-        ip=$(http_get "https://api.ipify.org" 2>/dev/null)
-    fi
+    # NOTE: there used to be a final fallback here that queried
+    # api.ipify.org WITHOUT $proxy_args. If all three proxied attempts
+    # above failed, that fallback silently made a DIRECT (non-WARP)
+    # request and reported the server's own real IP as if it were the
+    # WARP exit IP -- a false "success" that actively hides a broken
+    # proxy instead of reporting the failure. Removed: if none of the
+    # proxied checks succeed, this function now correctly returns
+    # failure rather than masking it with the wrong IP.
     ip="${ip%%$'\n'}"
     ip="${ip%%$'\r'}"
     ip="${ip#"${ip%%[![:space:]]*}"}"
