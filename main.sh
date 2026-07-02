@@ -2200,15 +2200,52 @@ dexter_warp_change_ip_by_country() {
     lkg_conf_backup=$(mktemp 2>/dev/null) || lkg_conf_backup="${WIREPROXY_CONF}.lkg.$$"
     cp -f "$WIREPROXY_CONF" "$lkg_conf_backup" 2>/dev/null
 
+    # If we're already connected and already sitting in the target
+    # country, there's nothing to do -- rotating anyway would just
+    # disconnect a working, already-correct tunnel for no reason.
+    if dexter_warp_is_connected; then
+        local current_check
+        current_check=$(dexter_warp_get_ip_and_country)
+        if [ -n "$current_check" ]; then
+            local current_country="${current_check##*|}"
+            if [ "$current_country" = "$target" ]; then
+                printf "%b\n" "${GREEN}✔ Already connected to a ${target} exit.${NC}"
+                printf "%b\n" "IP       : ${GREEN}${current_check%%|*}${NC}"
+                rm -f "$lkg_conf_backup" 2>/dev/null
+                return 0
+            fi
+        fi
+    fi
+
     printf "%b\n" "${CYAN}Searching for a $target exit (up to ${max_attempts} attempts / $((max_seconds/60))min)...${NC}"
 
-    local healthy_eps
-    healthy_eps=$(get_healthy_endpoints)
-    local -a endpoints_array=()
-    while IFS= read -r ep; do
-        [ -n "$ep" ] && endpoints_array+=("$ep")
-    done <<< "$healthy_eps"
-    [ ${#endpoints_array[@]} -eq 0 ] && endpoints_array=("${WARP_ENDPOINTS[@]}")
+    # NOTE: previously this pre-filtered via get_healthy_endpoints() using a
+    # broken TCP probe against UDP-only WireGuard endpoints (see the
+    # optimize function's comment for the full explanation) -- removed in
+    # favor of just using the real list and letting the actual connect+
+    # trace attempt below be the ground-truth test.
+    local -a endpoints_array=("${WARP_ENDPOINTS[@]}")
+
+    # Try each known endpoint once, in a random (shuffled) order rather
+    # than picking with replacement -- with only a handful of fixed PoPs,
+    # each one deterministically leads to roughly the same colo/country
+    # every time, so randomly re-picking the same endpoint multiple times
+    # (as the old "pick a random index every attempt" approach did) just
+    # burns attempts without ever seeing a country the first pass hadn't
+    # already revealed. One shuffled pass through every endpoint is both
+    # faster and strictly more thorough than 50 random draws with
+    # replacement from the same small pool.
+    local -a shuffled=("${endpoints_array[@]}")
+    local si sj tmp
+    for ((si = ${#shuffled[@]} - 1; si > 0; si--)); do
+        sj=$(( $(get_random) % (si + 1) ))
+        tmp="${shuffled[$si]}"
+        shuffled[$si]="${shuffled[$sj]}"
+        shuffled[$sj]="$tmp"
+    done
+    if [ "${#shuffled[@]}" -lt "$max_attempts" ]; then
+        max_attempts=${#shuffled[@]}
+    fi
 
     local start_ts
     start_ts=$(date +%s)
@@ -2227,10 +2264,8 @@ dexter_warp_change_ip_by_country() {
 
         dexter_warp_disconnect
 
-        local rand_val rand_idx selected_endpoint validated_ep
-        rand_val=$(get_random)
-        rand_idx=$((rand_val % ${#endpoints_array[@]}))
-        selected_endpoint="${endpoints_array[$rand_idx]}"
+        local selected_endpoint validated_ep
+        selected_endpoint="${shuffled[$((attempt - 1))]}"
         validated_ep=$(validate_endpoint "$selected_endpoint")
         [ -z "$validated_ep" ] && { log_msg "WARNING" "Invalid endpoint skipped: $selected_endpoint"; continue; }
 
@@ -2340,6 +2375,11 @@ _OPT_SETUP_DIVISOR=5
 
 dexter_warp_optimize_connection() {
     local non_interactive="${1:-}"
+    # When "different" is passed, the final selection skips any result
+    # whose country matches wherever we're already connected, so the user
+    # is guaranteed to land somewhere new rather than possibly being
+    # re-scored back onto the exact same exit they started from.
+    local exclude_current="${2:-}"
 
     if ! dexter_warp_is_installed; then
         printf "%b\n" "${RED}WARP is not installed.${NC}"
@@ -2350,18 +2390,30 @@ dexter_warp_optimize_connection() {
         return 1
     fi
 
+    local current_country_before=""
+    if [ "$exclude_current" = "different" ] && dexter_warp_is_connected; then
+        local current_check
+        current_check=$(dexter_warp_get_ip_and_country)
+        [ -n "$current_check" ] && current_country_before="${current_check##*|}"
+    fi
+
     local lkg_endpoint="$WG_PEER_ENDPOINT"
     local lkg_conf_backup
     lkg_conf_backup=$(mktemp 2>/dev/null) || lkg_conf_backup="${WIREPROXY_CONF}.lkg.$$"
     cp -f "$WIREPROXY_CONF" "$lkg_conf_backup" 2>/dev/null
 
-    local healthy_eps
-    healthy_eps=$(get_healthy_endpoints)
-    local -a endpoints_array=()
-    while IFS= read -r ep; do
-        [ -n "$ep" ] && endpoints_array+=("$ep")
-    done <<< "$healthy_eps"
-    [ ${#endpoints_array[@]} -eq 0 ] && endpoints_array=("${WARP_ENDPOINTS[@]}")
+    # NOTE: previously this pre-filtered via get_healthy_endpoints(), which
+    # used a TCP probe ("nc -z") to guess reachability. WireGuard/WARP only
+    # ever answers on UDP -- a TCP probe against it is testing the wrong
+    # protocol entirely, so it produced unreliable results (sometimes
+    # correctly falling back to all 7 endpoints, sometimes appearing to
+    # find only 1 "healthy" one for reasons unrelated to real WARP
+    # reachability). The real test below -- actually connecting through
+    # each endpoint and requesting cdn-cgi/trace -- is already the
+    # ground-truth reachability check, so the TCP pre-filter added no
+    # value and only introduced a source of false negatives. Just use the
+    # full list directly.
+    local -a endpoints_array=("${WARP_ENDPOINTS[@]}")
 
     printf "%b\n" "${CYAN}Testing ${#endpoints_array[@]} endpoints (3 samples each)...${NC}"
 
@@ -2477,13 +2529,33 @@ dexter_warp_optimize_connection() {
     local -a order
     order=($(for i in "${!result_score[@]}"; do printf '%s\t%s\n' "${result_score[$i]}" "$i"; done | sort -rn | cut -f2))
     local rank=1
-    local best_idx="${order[0]}"
     for i in "${order[@]}"; do
         local mark=" "
         [ "$rank" -eq 1 ] && mark="★"
         printf "%b\n" "  ${mark} ${result_colo[$i]} (${result_country[$i]})  avg=${result_avg[$i]}ms  jitter=${result_jitter[$i]}ms  setup=${result_setup[$i]}ms  score=${result_score[$i]}  (${result_ep[$i]})"
         rank=$((rank + 1))
     done
+
+    local best_idx="${order[0]}"
+    local skipped_for_same_country=false
+    if [ "$exclude_current" = "different" ] && [ -n "$current_country_before" ]; then
+        local found_different=false
+        for i in "${order[@]}"; do
+            if [ "${result_country[$i]}" != "$current_country_before" ]; then
+                best_idx="$i"
+                found_different=true
+                break
+            fi
+        done
+        if [ "$found_different" = false ]; then
+            # Every reachable endpoint landed in the same country as
+            # before (e.g. only one PoP is actually usable from this
+            # network) -- fall back to the plain best rather than
+            # refusing outright, but say so honestly.
+            skipped_for_same_country=true
+            best_idx="${order[0]}"
+        fi
+    fi
 
     local best_ep="${result_ep[$best_idx]}"
     local best_colo="${result_colo[$best_idx]}"
@@ -2492,7 +2564,14 @@ dexter_warp_optimize_connection() {
     local best_score="${result_score[$best_idx]}"
 
     printf "%b\n" ""
-    printf "%b\n" "${GREEN}Best Exit: ${best_colo} (${best_country}), avg ${best_avg}ms, score ${best_score} - applying...${NC}"
+    if [ "$exclude_current" = "different" ]; then
+        if [ "$skipped_for_same_country" = true ]; then
+            printf "%b\n" "${YELLOW}Every reachable endpoint landed in ${current_country_before} - couldn't find a different country from here. Using the best overall instead:${NC}"
+        else
+            printf "%b\n" "${GREEN}Best Exit different from current (${current_country_before:-current}): ${best_colo} (${best_country}), avg ${best_avg}ms, score ${best_score} - applying...${NC}"
+        fi
+    fi
+    [ "$exclude_current" != "different" ] && printf "%b\n" "${GREEN}Best Exit: ${best_colo} (${best_country}), avg ${best_avg}ms, score ${best_score} - applying...${NC}"
 
     dexter_warp_disconnect
     WG_PEER_ENDPOINT="$best_ep"
@@ -2521,13 +2600,13 @@ dexter_warp_optimize_connection() {
 dexter_warp_change_ip_menu() {
     printf "%b\n" "${CYAN}--- Change IP ---${NC}"
     printf "%b\n" "  1) Optimize (Best Latency/PoP) - recommended"
-    printf "%b\n" "  2) By Country"
+    printf "%b\n" "  2) By Country (manual)"
     printf "%b\n" "  3) Generate New WARP Identity (full re-registration - use if the account/registration itself seems broken)"
     printf "%b\n" "  0) Cancel"
     local choice
     read -r -p "Choose option: " choice
     case "$choice" in
-        1) dexter_warp_optimize_connection ;;
+        1) dexter_warp_optimize_connection "" "different" ;;
         2) dexter_warp_change_ip_by_country ;;
         3) dexter_warp_new_identity ;;
         *) printf "%b\n" "${YELLOW}Canceled.${NC}" ;;
