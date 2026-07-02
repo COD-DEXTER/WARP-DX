@@ -1179,9 +1179,25 @@ dexter_warp_download_wireproxy() {
             ;;
     esac
 
-    local direct_url="https://github.com/octeep/wireproxy/releases/latest/download/wireproxy_linux_${arch}.tar.gz"
+    # NOTE: octeep/wireproxy (the original, archived upstream) has NO
+    # support for SOCKS5 UDP ASSOCIATE at all -- its SOCKS5 server only
+    # implements TCP CONNECT. This is a hard limitation of that specific
+    # binary, not something fixable from this script. In practice this
+    # means any UDP traffic sent to the SOCKS5 proxy (most commonly DNS
+    # queries relayed through it by clients like Xray's "socks" outbound)
+    # would silently hang until the caller's own timeout, even though TCP
+    # traffic worked fine. windtf/wireproxy is the actively maintained
+    # continuation of the same project and added real UDP ASSOCIATE
+    # support via go-socks5 (v0.1.0+, which also fixed an earlier
+    # unauthenticated-bind security issue in that same feature). Using it
+    # lets a plain [Socks5] outbound with no special routing rules handle
+    # both TCP and UDP correctly. We still fall back to the old
+    # octeep/pufferffish binaries if windtf is ever unreachable, so
+    # installs don't hard-fail over this.
+    local direct_url="https://github.com/windtf/wireproxy/releases/latest/download/wireproxy_linux_${arch}.tar.gz"
     local mirror_url="https://mirror.ghproxy.com/${direct_url}"
-    local fallback_url="https://github.com/pufferffish/wireproxy/releases/latest/download/wireproxy_linux_${arch}.tar.gz"
+    local fallback_url="https://github.com/octeep/wireproxy/releases/latest/download/wireproxy_linux_${arch}.tar.gz"
+    local fallback_url2="https://github.com/pufferffish/wireproxy/releases/latest/download/wireproxy_linux_${arch}.tar.gz"
     local temp_archive="/tmp/wireproxy_$$.tar.gz"
     local extract_dir="/tmp/wp_extract_$$"
     TEMP_DIRS+=("$extract_dir")
@@ -1192,7 +1208,8 @@ dexter_warp_download_wireproxy() {
 
     http_download "$direct_url" -o "$temp_archive" 2>/dev/null || \
     http_download "$mirror_url" -o "$temp_archive" 2>/dev/null || \
-    http_download "$fallback_url" -o "$temp_archive" 2>/dev/null || {
+    http_download "$fallback_url" -o "$temp_archive" 2>/dev/null || \
+    http_download "$fallback_url2" -o "$temp_archive" 2>/dev/null || {
         rm -f "$temp_archive" 2>/dev/null
         return 1
     }
